@@ -1,0 +1,10 @@
+wfdb
+pandas
+numpy
+tqdm
+matplotlib
+neurokit2
+requests
+opencv-python
+streamlit
+scipy
