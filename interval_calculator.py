@@ -70,6 +70,11 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
         "error": None,
     }
 
+    def _safe_to_int_indices(arr):
+        a = np.array(arr, dtype=float)
+        a = a[np.isfinite(a)]
+        return a.astype(int)
+
     try:
         # ── Step 1: Clean the signal ──────────────────────────
         cleaned = nk.ecg_clean(signal, sampling_rate=sampling_rate)
@@ -118,8 +123,7 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
             # ── PR Interval ────────────────────────────────────
             # PR = P onset to R peak
-            p_onsets  = np.array(waves.get("ECG_P_Onsets", []))
-            p_onsets  = p_onsets[~np.isnan(p_onsets)].astype(int)
+            p_onsets  = _safe_to_int_indices(waves.get("ECG_P_Onsets", []))
             results["p_peaks"] = p_onsets.tolist()
 
             if len(p_onsets) >= 2 and len(r_peaks) >= 2:
@@ -137,10 +141,8 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
             # ── QRS Duration ───────────────────────────────────
             # QRS = Q onset to S offset
-            q_onsets   = np.array(waves.get("ECG_Q_Peaks", []))
-            s_offsets  = np.array(waves.get("ECG_S_Peaks", []))
-            q_onsets   = q_onsets[~np.isnan(q_onsets)].astype(int)
-            s_offsets  = s_offsets[~np.isnan(s_offsets)].astype(int)
+            q_onsets   = _safe_to_int_indices(waves.get("ECG_Q_Peaks", []))
+            s_offsets  = _safe_to_int_indices(waves.get("ECG_S_Peaks", []))
 
             if len(q_onsets) >= 2 and len(s_offsets) >= 2:
                 qrs_durations = []
@@ -157,8 +159,7 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
             # ── QTc (Bazett's Formula) ─────────────────────────
             # QTc = QT / sqrt(RR in seconds)
             # Using T-wave offsets for QT measurement
-            t_offsets = np.array(waves.get("ECG_T_Offsets", []))
-            t_offsets = t_offsets[~np.isnan(t_offsets)].astype(int)
+            t_offsets = _safe_to_int_indices(waves.get("ECG_T_Offsets", []))
 
             if len(t_offsets) >= 2:
                 qtc_values = []
