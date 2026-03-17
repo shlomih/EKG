@@ -13,7 +13,7 @@ python -m pip install -r requirements.txt
 
 ### 1. Install dependencies
 ```bash
-pip install wfdb pandas numpy tqdm matplotlib neurokit2
+pip install -r requirements.txt
 ```
 
 ### 2. Download datasets
@@ -43,6 +43,41 @@ python explore_dataset.py --plot 3 --diagnosis STEMI
 
 # Inspect a specific record
 python explore_dataset.py --record 1
+```
+
+### 4. Run the Streamlit app
+
+```bash
+streamlit run app.py
+```
+
+---
+
+## Exposing the app publicly (remote access)
+
+### Option A — ngrok (recommended, works on all networks)
+ngrok uses standard HTTPS port 443, so it's never blocked by firewalls.
+
+```bash
+# Install
+npm install -g ngrok
+
+# Expose the app
+ngrok http 8501
+```
+
+### Option B — Cloudflare Tunnel (no account required)
+```bash
+# Download cloudflared from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+cloudflared tunnel --url http://localhost:8501
+```
+
+### Option C — localtunnel (may be blocked by firewalls)
+localtunnel requires outbound TCP on port 30303. If you see `connection refused: localtunnel.me:30303`, your firewall is blocking it — use ngrok or cloudflared instead.
+
+```bash
+npm install -g localtunnel
+lt --port 8501
 ```
 
 ---
@@ -85,9 +120,13 @@ ekg_datasets/
 
 ---
 
-## Next scripts (coming next)
+## Scripts
 
-- `digitization_pipeline.py` — OpenCV grid detection + trace extraction on printed strips
-- `interval_calculator.py` — NeuroKit2-based QTc, PR, QRS measurement
-- `poc_classifier.py` — Pre-trained model inference on your records
-- `app.py` — Streamlit POC interface
+| Script | Description |
+|--------|-------------|
+| `app.py` | Streamlit POC interface — main entry point |
+| `interval_calculator.py` | NeuroKit2-based QTc, PR, QRS measurement |
+| `digitization_pipeline.py` | OpenCV grid detection + trace extraction on printed strips |
+| `download_ekg_datasets.py` | Downloads PTB-XL, CPSC 2018, and Georgia datasets |
+| `explore_dataset.py` | Summary stats and EKG strip plotting |
+| `database_setup.py` | Database initialization utilities |

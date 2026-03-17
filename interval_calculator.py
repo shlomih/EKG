@@ -70,6 +70,16 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
         "error": None,
     }
 
+    min_samples = sampling_rate * 3  # NeuroKit2 needs at least ~3 seconds
+    if len(signal) < min_samples:
+        duration = len(signal) / sampling_rate
+        results["error"] = (
+            f"Signal too short ({duration:.1f}s, {len(signal)} samples). "
+            f"Need at least 3s at {sampling_rate}Hz. "
+            "For scanned images, ensure the full EKG strip is visible and well-lit."
+        )
+        return results
+
     def _safe_to_int_indices(arr):
         a = np.array(arr, dtype=float)
         a = a[np.isfinite(a)]

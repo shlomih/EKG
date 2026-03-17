@@ -27,6 +27,7 @@ import numpy as np
 import wfdb
 from tqdm import tqdm
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ─────────────────────────────────────────────
 # Configuration
@@ -191,30 +192,29 @@ def download_ptbxl(small: bool = False, count: int = 100):
     fail_count = 0
     failed_records = []
 
+    def download_record(record_path):
+        record_dir = out_dir / Path(record_path).parent
+        ensure_dir(record_dir)
+        for ext in [".hea", ".dat"]:
+            dest_file = out_dir / f"{record_path}{ext}"
+            if dest_file.exists():
+                continue
+            url = f"{PTBXL_BASE}/{record_path}{ext}"
+            if not fetch_file(url, dest_file):
+                return record_path, False
+        return record_path, True
+
     with tqdm(total=len(record_list), unit="rec", ncols=72, colour="green") as pbar:
-        for record_path in record_list:
-            # record_path: "records500/00000/00001_hr"
-            record_dir = out_dir / Path(record_path).parent
-            ensure_dir(record_dir)
-
-            ok = True
-            for ext in [".hea", ".dat"]:
-                dest_file = out_dir / f"{record_path}{ext}"
-                if dest_file.exists():
-                    continue  # already downloaded, resumable
-                url = f"{PTBXL_BASE}/{record_path}{ext}"
-                if not fetch_file(url, dest_file):
-                    ok = False
-                    break
-
-            if ok:
-                success_count += 1
-            else:
-                fail_count += 1
-                failed_records.append({"record": record_path})
-
-            pbar.update(1)
-            time.sleep(0.03)  # polite rate limiting
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(download_record, rp): rp for rp in record_list}
+            for future in as_completed(futures):
+                record_path, ok = future.result()
+                if ok:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    failed_records.append({"record": record_path})
+                pbar.update(1)
 
     print(f"\n  ✓ Downloaded : {success_count:,} records")
     if fail_count > 0:
