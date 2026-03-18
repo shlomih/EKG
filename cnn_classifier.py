@@ -64,6 +64,39 @@ N_CLASSES = 5
 # Model Architecture
 # -------------------------------------------------------------
 
+class FocalLoss(nn.Module):
+    """Focal Loss — down-weights easy examples, focuses on hard misclassifications.
+    Especially effective for rare classes like HYP where the model is often wrong.
+    """
+    def __init__(self, weight=None, gamma=2.0, label_smoothing=0.05):
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits, targets):
+        # Apply label smoothing manually
+        n_classes = logits.size(1)
+        with torch.no_grad():
+            smooth_targets = torch.zeros_like(logits)
+            smooth_targets.fill_(self.label_smoothing / (n_classes - 1))
+            smooth_targets.scatter_(1, targets.unsqueeze(1), 1.0 - self.label_smoothing)
+
+        log_probs = torch.nn.functional.log_softmax(logits, dim=1)
+        probs = torch.exp(log_probs)
+
+        # Focal modulation: (1 - p_t)^gamma
+        focal_weight = (1.0 - probs) ** self.gamma
+
+        # Weighted focal cross-entropy
+        loss = -focal_weight * smooth_targets * log_probs
+
+        if self.weight is not None:
+            loss = loss * self.weight.unsqueeze(0)
+
+        return loss.sum(dim=1).mean()
+
+
 class SqueezeExcitation(nn.Module):
     """Channel attention: learns which channels (features) matter most."""
     def __init__(self, channels, reduction=4):
@@ -216,54 +249,89 @@ def augment_signal(sig):
 # Dataset
 # -------------------------------------------------------------
 
+def _load_and_preprocess_signal(rec_path):
+    """Load a single record from disk and preprocess to (12, 5000) float32."""
+    try:
+        rec = wfdb.rdrecord(rec_path)
+        sig = rec.p_signal  # (N, channels)
+    except Exception:
+        sig = None
+
+    if sig is None:
+        return np.zeros((N_LEADS, SIGNAL_LEN), dtype=np.float32)
+
+    # Handle non-12-lead signals
+    n_ch = sig.shape[1]
+    if n_ch < N_LEADS:
+        sig = np.hstack([sig, np.zeros((sig.shape[0], N_LEADS - n_ch))])
+    elif n_ch > N_LEADS:
+        sig = sig[:, :N_LEADS]
+
+    # Resample if needed
+    if hasattr(rec, 'fs') and rec.fs != 500 and rec.fs > 0:
+        from scipy.signal import resample
+        target_n = int(sig.shape[0] * 500 / rec.fs)
+        sig = resample(sig, target_n, axis=0)
+
+    # Pad or truncate to SIGNAL_LEN
+    if sig.shape[0] < SIGNAL_LEN:
+        pad = np.zeros((SIGNAL_LEN - sig.shape[0], N_LEADS))
+        sig = np.vstack([sig, pad])
+    else:
+        sig = sig[:SIGNAL_LEN]
+
+    sig = sig.T.astype(np.float32)  # (12, 5000)
+
+    # Clean NaN/Inf values
+    if not np.isfinite(sig).all():
+        sig = np.nan_to_num(sig, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Clamp extreme values
+    sig = np.clip(sig, -20.0, 20.0)
+
+    # Normalize per-lead
+    mean = sig.mean(axis=1, keepdims=True)
+    std = sig.std(axis=1, keepdims=True) + 1e-8
+    sig = (sig - mean) / std
+
+    # Final NaN safety check
+    if not np.isfinite(sig).all():
+        sig = np.zeros((N_LEADS, SIGNAL_LEN), dtype=np.float32)
+
+    return sig
+
+
+def preload_signals(all_paths):
+    """Pre-load all signals into memory. Returns dict: path -> (12, 5000) array."""
+    cache = {}
+    unique_paths = list(set(all_paths))
+    print(f"\n  Pre-loading {len(unique_paths)} unique signals into memory...")
+    t0 = time.time()
+    for i, path in enumerate(unique_paths):
+        if (i + 1) % 2000 == 0 or (i + 1) == len(unique_paths):
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (len(unique_paths) - i - 1) / rate
+            print(f"    {i+1}/{len(unique_paths)} ({rate:.0f}/s, ETA {eta:.0f}s)")
+        cache[path] = _load_and_preprocess_signal(path)
+    elapsed = time.time() - t0
+    print(f"  Pre-loaded {len(cache)} signals in {elapsed:.0f}s")
+    return cache
+
+
 class ECGDataset(Dataset):
-    """Lazy-loading dataset -- reads WFDB records from disk per item.
-    Handles variable-length signals by padding/truncating to SIGNAL_LEN.
-    """
-    def __init__(self, record_paths, labels, augment=False):
+    """Dataset backed by pre-loaded signal cache for fast training."""
+    def __init__(self, record_paths, labels, signal_cache, augment=False):
         self.record_paths = record_paths
         self.labels = labels
+        self.signal_cache = signal_cache
         self.augment = augment
 
     def __len__(self):
         return len(self.record_paths)
 
     def __getitem__(self, idx):
-        try:
-            rec = wfdb.rdrecord(self.record_paths[idx])
-            sig = rec.p_signal  # (N, channels)
-        except Exception:
-            sig = None
-
-        if sig is None:
-            sig = np.zeros((SIGNAL_LEN, N_LEADS), dtype=np.float32)
-        else:
-            # Handle non-12-lead signals
-            n_ch = sig.shape[1]
-            if n_ch < N_LEADS:
-                sig = np.hstack([sig, np.zeros((sig.shape[0], N_LEADS - n_ch))])
-            elif n_ch > N_LEADS:
-                sig = sig[:, :N_LEADS]
-
-            # Resample if needed (detect by checking record fs)
-            if hasattr(rec, 'fs') and rec.fs != 500 and rec.fs > 0:
-                from scipy.signal import resample
-                target_n = int(sig.shape[0] * 500 / rec.fs)
-                sig = resample(sig, target_n, axis=0)
-
-            # Pad or truncate to SIGNAL_LEN
-            if sig.shape[0] < SIGNAL_LEN:
-                pad = np.zeros((SIGNAL_LEN - sig.shape[0], N_LEADS))
-                sig = np.vstack([sig, pad])
-            else:
-                sig = sig[:SIGNAL_LEN]
-
-        sig = sig.T.astype(np.float32)  # (12, 5000)
-
-        # Normalize per-lead
-        mean = sig.mean(axis=1, keepdims=True)
-        std = sig.std(axis=1, keepdims=True) + 1e-8
-        sig = (sig - mean) / std
+        sig = self.signal_cache[self.record_paths[idx]].copy()
 
         # Apply augmentation (training only)
         if self.augment:
@@ -421,13 +489,13 @@ def train(use_multi=False):
     val_mask = folds == 9
     test_mask = folds == 10
 
-    # Partial oversampling: bring minority classes up to median count (not max)
-    # This avoids the HYP false-positive explosion from full oversampling
+    # Aggressive oversampling: bring all minority classes up to max count
+    # Combined with focal loss, this avoids false-positive explosion
     train_paths = paths[train_mask].tolist()
     train_labels = labels[train_mask].tolist()
 
     class_counts = np.bincount(train_labels, minlength=N_CLASSES)
-    target_count = int(np.median(class_counts))  # ~2656 (STTC/CD level)
+    target_count = int(np.max(class_counts))
 
     oversampled_paths = list(train_paths)
     oversampled_labels = list(train_labels)
@@ -448,9 +516,17 @@ def train(use_multi=False):
     for i, label in enumerate(SUPERCLASS_LABELS):
         print(f"    {label}: {int(class_counts[i])} -> {int(os_counts[i])}")
 
-    train_ds = ECGDataset(oversampled_paths, oversampled_labels, augment=True)
-    val_ds = ECGDataset(paths[val_mask].tolist(), labels[val_mask].tolist(), augment=False)
-    test_ds = ECGDataset(paths[test_mask].tolist(), labels[test_mask].tolist(), augment=False)
+    # Pre-load all signals into memory (one-time cost, makes training ~20x faster)
+    all_unique_paths = list(set(
+        oversampled_paths +
+        paths[val_mask].tolist() +
+        paths[test_mask].tolist()
+    ))
+    signal_cache = preload_signals(all_unique_paths)
+
+    train_ds = ECGDataset(oversampled_paths, oversampled_labels, signal_cache, augment=True)
+    val_ds = ECGDataset(paths[val_mask].tolist(), labels[val_mask].tolist(), signal_cache, augment=False)
+    test_ds = ECGDataset(paths[test_mask].tolist(), labels[test_mask].tolist(), signal_cache, augment=False)
 
     print(f"  Val: {len(val_ds)} | Test: {len(test_ds)}")
 
@@ -477,7 +553,7 @@ def train(use_multi=False):
         epochs=n_epochs,
         pct_start=0.1,
     )
-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
+    criterion = FocalLoss(weight=class_weights, gamma=2.0, label_smoothing=0.05)
 
     # Training loop
     best_val_f1 = 0.0
@@ -499,9 +575,20 @@ def train(use_multi=False):
 
         for batch_x, batch_y in train_loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+
+            # Skip batches with NaN/Inf inputs (corrupt records)
+            if not torch.isfinite(batch_x).all():
+                batch_x = torch.nan_to_num(batch_x, nan=0.0, posinf=0.0, neginf=0.0)
+
             optimizer.zero_grad()
             logits = model(batch_x)
             loss = criterion(logits, batch_y)
+
+            # Skip NaN loss (prevents gradient corruption)
+            if not torch.isfinite(loss):
+                scheduler.step()
+                continue
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()

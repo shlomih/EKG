@@ -30,7 +30,7 @@ def get_connection():
 
 
 def init_db():
-    """Initialize database tables."""
+    """Initialize database tables and migrate schema if needed."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -47,10 +47,19 @@ def init_db():
             is_athlete BOOLEAN DEFAULT 0,
             is_pregnant BOOLEAN DEFAULT 0,
             k_level FLOAT DEFAULT 4.0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Ensure updated_at exists for older schemas
+    cursor.execute("PRAGMA table_info(patients)")
+    columns = [r[1] for r in cursor.fetchall()]
+    if 'updated_at' not in columns:
+        cursor.execute("ALTER TABLE patients ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+    # Ensure created_at exists for older schema
+    if 'created_at' not in columns:
+        cursor.execute("ALTER TABLE patients ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
     # 2. EKG Record Table (Provenance)
     cursor.execute('''

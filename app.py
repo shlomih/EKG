@@ -801,7 +801,14 @@ if 'signal' in st.session_state:
         _share_lines.append("")
         _share_lines.append("Findings:")
         for f in _flags_for_share:
-            clean = f.encode("ascii", "ignore").decode().strip()
+            if isinstance(f, dict):
+                # Convert clinical flag dict to readable string
+                finding = f.get("finding", "")
+                explanation = f.get("explanation", "")
+                clean = f"{finding} {explanation}".strip()
+            else:
+                clean = str(f)
+            clean = clean.encode("ascii", "ignore").decode().strip()
             if clean:
                 _share_lines.append(f"- {clean}")
 
@@ -828,12 +835,17 @@ if 'signal' in st.session_state:
             )
             patient_name_file = f"{patient_profile.get('first_name', '')}_{patient_profile.get('last_name', '')}".strip("_")
             filename = f"ECG_Report_{patient_name_file or 'patient'}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-            st.download_button(
-                label="PDF Report",
-                data=pdf_bytes,
-                file_name=filename,
-                mime="application/pdf",
-            )
+            if isinstance(pdf_bytes, bytearray):
+                pdf_bytes = bytes(pdf_bytes)
+            if not isinstance(pdf_bytes, (bytes, bytearray)):
+                st.warning("PDF generator did not return binary bytes. Download unavailable.")
+            else:
+                st.download_button(
+                    label="PDF Report",
+                    data=pdf_bytes,
+                    file_name=filename,
+                    mime="application/pdf",
+                )
 
     # Email share
     with col_email:
@@ -870,7 +882,7 @@ if 'signal' in st.session_state:
         st.code(share_text, language=None)
 
     # ── Legacy single-lead ST Analysis (fallback) ──
-    else:
+    if not (ST_TERRITORY_AVAILABLE and "signals_12" in st.session_state and "lead_names" in st.session_state):
         st.markdown("#### ST-Segment Analysis")
         st_res = analyze_st_segment(st.session_state.signal, st.session_state.fs)
         fig, ax = plt.subplots(figsize=(12, 3.5))
