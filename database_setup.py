@@ -61,6 +61,8 @@ def init_db():
     if 'created_at' not in columns:
         cursor.execute("ALTER TABLE patients ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
+    conn.commit()  # Commit schema migrations before proceeding
+
     # 2. EKG Record Table (Provenance)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ekg_records (

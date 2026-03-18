@@ -246,7 +246,9 @@ def generate_pdf_report(patient_profile, classification=None, intervals=None,
 
         pdf.set_font("Helvetica", "", 9)
         for flag in clinical_flags:
-            clean = flag.encode("ascii", "ignore").decode().strip()
+            if isinstance(flag, dict):
+                flag = flag.get("finding") or flag.get("text") or str(flag)
+            clean = str(flag).encode("ascii", "ignore").decode().strip()
             if clean:
                 pdf.cell(0, 5, f"- {clean}", ln=True)
         pdf.ln(2)
