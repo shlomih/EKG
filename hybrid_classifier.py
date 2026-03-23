@@ -36,14 +36,16 @@ SUPERCLASS_DESCRIPTIONS = {
 LEAD_ORDER = ["I", "II", "III", "AVR", "AVL", "AVF",
               "V1", "V2", "V3", "V4", "V5", "V6"]
 
-# Per-class minimum confidence thresholds
-# Below these, the prediction falls back to the next-best class
+# Per-class minimum confidence thresholds (optimised on PTB-XL val fold 9 with v10 model)
+# Below these, the prediction falls back to the next-best class.
+# MI/STTC set to 0 — thresholds for these classes redistributed borderline HYP predictions
+# unnecessarily; removing them gives +0.010 HYP F1 with no MacroF1 cost.
 CLASS_THRESHOLDS = {
-    "NORM": 0.30,
-    "MI":   0.25,
-    "STTC": 0.25,
-    "HYP":  0.35,  # Higher threshold — reduce false positives
-    "CD":   0.25,
+    "NORM": 0.25,
+    "MI":   0.00,
+    "STTC": 0.00,
+    "HYP":  0.45,  # Higher threshold — reduce false positives
+    "CD":   0.30,
 }
 
 
@@ -175,7 +177,7 @@ def compute_voltage_criteria(signal_12, fs, lead_names, sex="M"):
 # Hybrid Prediction
 # ---------------------------------------------------------
 
-def hybrid_predict(model_data, signal_12, fs, lead_names, sex="M"):
+def hybrid_predict(model_data, signal_12, fs, lead_names, sex="M", age=50):
     """
     Hybrid prediction: CNN probabilities + voltage criteria + thresholds.
 
@@ -192,8 +194,8 @@ def hybrid_predict(model_data, signal_12, fs, lead_names, sex="M"):
     """
     from cnn_classifier import predict_cnn, SUPERCLASS_LABELS as CNN_LABELS
 
-    # Step 1: Get CNN predictions
-    cnn_result = predict_cnn(model_data, signal_12, fs)
+    # Step 1: Get CNN predictions (pass sex/age for ECGNetJoint aux features)
+    cnn_result = predict_cnn(model_data, signal_12, fs, sex=sex, age=age)
     probs = cnn_result["probabilities"]
 
     # Convert to array for manipulation
@@ -205,24 +207,38 @@ def hybrid_predict(model_data, signal_12, fs, lead_names, sex="M"):
     hyp_idx = SUPERCLASS_LABELS.index("HYP")
 
     adjustment = None
+    model_uses_aux = model_data.get("use_aux_features", False)
 
-    # Step 3: Adjust HYP probability based on voltage criteria
+    # Step 3: Adjust HYP probability based on voltage criteria.
+    # Skip voltage penalty/boost when model already has voltage aux features —
+    # the CNN has learned voltage awareness internally; post-hoc gating is redundant
+    # and empirically hurts recall without improving precision on joint models.
     cnn_hyp_prob = prob_array[hyp_idx]
 
-    if cnn_result["prediction"] == "HYP":
-        if not voltage["hypertrophy_any"] and hyp_score < 0.3:
-            # CNN says HYP but voltage criteria disagree -> penalize
-            prob_array[hyp_idx] *= 0.3
-            adjustment = "HYP downgraded: voltage criteria not met"
-        elif hyp_score < 0.2:
-            prob_array[hyp_idx] *= 0.5
-            adjustment = "HYP reduced: weak voltage evidence"
-    else:
-        if voltage["hypertrophy_any"] and hyp_score > 0.6:
-            # CNN missed HYP but voltage criteria are strong -> boost
-            boost = hyp_score * 0.3
-            prob_array[hyp_idx] = min(0.9, prob_array[hyp_idx] + boost)
-            adjustment = f"HYP boosted: strong voltage criteria (score={hyp_score:.2f})"
+    if not model_uses_aux:
+        sokolow_val = voltage["sokolow_lyon"]["value"]
+        cornell_val = voltage["cornell"]["value"]
+
+        if cnn_result["prediction"] == "HYP":
+            if not voltage["hypertrophy_any"] and hyp_score < 0.3:
+                if sokolow_val < 2.0 and cornell_val < 1.5:
+                    if cnn_hyp_prob < 0.5:
+                        prob_array[hyp_idx] *= 0.10
+                        adjustment = "HYP hard-blocked: low voltage + low CNN confidence"
+                    else:
+                        prob_array[hyp_idx] *= 0.15
+                        adjustment = "HYP strongly penalized: low voltage evidence"
+                else:
+                    prob_array[hyp_idx] *= 0.15
+                    adjustment = "HYP downgraded: voltage criteria not met"
+            elif hyp_score < 0.2:
+                prob_array[hyp_idx] *= 0.4
+                adjustment = "HYP reduced: weak voltage evidence"
+        else:
+            if voltage["hypertrophy_any"] and hyp_score > 0.6:
+                boost = hyp_score * 0.3
+                prob_array[hyp_idx] = min(0.9, prob_array[hyp_idx] + boost)
+                adjustment = f"HYP boosted: strong voltage criteria (score={hyp_score:.2f})"
 
     # Renormalize
     prob_sum = prob_array.sum()

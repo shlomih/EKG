@@ -1,0 +1,18 @@
+CNN Validation Report
+==================================================
+Accuracy:      0.6988
+F1 (macro):    0.5985
+F1 (weighted): 0.6970
+N:             2158
+
+              precision    recall  f1-score   support
+
+        NORM       0.78      0.89      0.83       932
+          MI       0.74      0.53      0.61       411
+        STTC       0.63      0.63      0.63       351
+         HYP       0.23      0.34      0.27       113
+          CD       0.73      0.58      0.65       351
+
+    accuracy                           0.70      2158
+   macro avg       0.62      0.59      0.60      2158
+weighted avg       0.71      0.70      0.70      2158

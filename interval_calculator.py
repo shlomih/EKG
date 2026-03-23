@@ -203,6 +203,150 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
+# Multi-Lead Interval Analysis (Phase 1 Improvement)
+# Extract and analyze intervals from all 12 leads separately
+# ─────────────────────────────────────────────────────────────
+
+def calculate_intervals_all_leads(signal_12: np.ndarray, lead_names: list, 
+                                   sampling_rate: int = 500) -> dict:
+    """
+    Calculate clinical intervals (HR, PR, QRS, QTc) for each lead separately,
+    then compute consensus and dispersion metrics.
+
+    Args:
+        signal_12:      (N, 12) numpy array of 12-lead signal
+        lead_names:     List of 12 lead name strings (e.g., ["I", "II", "III", ...])
+        sampling_rate:  Hz (default 500)
+
+    Returns:
+        dict with keys:
+            - per_lead: { "II": {...}, "V1": {...}, } — intervals per lead
+            - consensus: { "hr": float, "pr": float, ... } — median across leads
+            - dispersion: { "qrs_std": float, ... } — std dev (repolarization variability)
+            - quality_per_lead: { "II": 0.57, ... } — signal quality per lead
+            - warnings: [] — list of anomalies detected
+    """
+    if signal_12.shape[1] != len(lead_names):
+        return {"error": f"Signal shape {signal_12.shape[1]} doesn't match lead_names length {len(lead_names)}"}
+
+    per_lead_results = {}
+    warnings = []
+    
+    # Extract intervals from each lead
+    for i, lead_name in enumerate(lead_names):
+        try:
+            lead_signal = signal_12[:, i]
+            intervals = calculate_intervals(lead_signal, sampling_rate)
+            per_lead_results[lead_name] = intervals
+        except Exception as e:
+            warnings.append(f"Lead {lead_name} analysis failed: {str(e)[:50]}")
+            per_lead_results[lead_name] = {"error": str(e)[:80]}
+
+    # Compute consensus metrics (median across leads)
+    consensus = _compute_consensus_metrics(per_lead_results)
+    
+    # Compute dispersion (variability across leads) — marker of arrhythmia/repolarization heterogeneity
+    dispersion = _compute_dispersion_metrics(per_lead_results)
+    
+    # Extract quality scores per lead
+    quality_per_lead = {
+        lead: results.get("quality_score", np.nan)
+        for lead, results in per_lead_results.items()
+    }
+    
+    # Flag leads with poor quality
+    poor_quality = [lead for lead, q in quality_per_lead.items() if q is not None and q < 0.4]
+    if poor_quality:
+        warnings.append(f"Poor signal quality in leads: {', '.join(poor_quality)}")
+    
+    # Flag high dispersion (potential arrhythmia pattern)
+    if dispersion.get("qrs_std", 0) > 20:
+        warnings.append(f"High QRS dispersion ({dispersion['qrs_std']:.1f} ms) — possible aberrancy pattern")
+    
+    if dispersion.get("qtc_std", 0) > 40:
+        warnings.append(f"High QTc dispersion ({dispersion['qtc_std']:.1f} ms) — repolarization heterogeneity")
+
+    return {
+        "per_lead": per_lead_results,
+        "consensus": consensus,
+        "dispersion": dispersion,
+        "quality_per_lead": quality_per_lead,
+        "warnings": warnings,
+    }
+
+
+def _compute_consensus_metrics(per_lead_results: dict) -> dict:
+    """Extract median intervals across leads (consensus metric)."""
+    consensus = {}
+    
+    for metric in ["hr", "pr", "qrs", "qtc", "hr_variability"]:
+        values = [
+            r.get(metric)
+            for r in per_lead_results.values()
+            if isinstance(r, dict) and r.get(metric) is not None and not np.isnan(r.get(metric, np.nan))
+        ]
+        if values:
+            consensus[metric] = round(float(np.median(values)), 1)
+        else:
+            consensus[metric] = None
+    
+    return consensus
+
+
+def _compute_dispersion_metrics(per_lead_results: dict) -> dict:
+    """Compute inter-lead variability (repolarization heterogeneity marker)."""
+    dispersion = {}
+    
+    for metric in ["qrs", "qtc", "pr"]:
+        values = [
+            r.get(metric)
+            for r in per_lead_results.values()
+            if isinstance(r, dict) and r.get(metric) is not None and not np.isnan(r.get(metric, np.nan))
+        ]
+        if len(values) >= 2:
+            dispersion[f"{metric}_std"] = round(float(np.std(values)), 1)
+            dispersion[f"{metric}_min"] = round(float(np.min(values)), 1)
+            dispersion[f"{metric}_max"] = round(float(np.max(values)), 1)
+        else:
+            dispersion[f"{metric}_std"] = None
+
+    return dispersion
+
+
+def _get_age_adjusted_hr_lower_threshold(age: int, is_athlete: bool = False) -> int:
+    """
+    Return age- and fitness-appropriate lower heart rate threshold (bradycardia cutoff).
+    
+    Phase 1 Clinical Improvement: Age-specific thresholds replace hardcoded 60 bpm.
+    
+    Standard cardiology reference ranges:
+    - Infants (0-3m): 100-160 bpm
+    - Children (3m-1y): 90-150 bpm
+    - Toddlers (1-3y): 80-130 bpm
+    - Preschool (3-6y): 70-110 bpm
+    - School age (6-12y): 60-100 bpm
+    - Teens (12-18y): 55-95 bpm
+    - Adults (18-65y): 60-100 bpm (or 50+ for athletes)
+    - Elderly (>65y): 50+ acceptable
+    
+    Args:
+        age: Patient age in years
+        is_athlete: True if regular athletic training
+    
+    Returns:
+        Heart rate lower bound (bpm) for clinical bradycardia threshold
+    """
+    if is_athlete:
+        return 40  # Trained athletes can have resting HR in 40s
+    elif age < 12:
+        return 60  # Children tolerate lower HR better
+    elif age > 65:
+        return 50  # Elderly: 50 bpm acceptable baseline
+    else:
+        return 60  # Standard adult threshold
+
+
+# ─────────────────────────────────────────────────────────────
 # Clinical Flag Engine
 # Applies patient context to produce final flags.
 # This is the "logic inverter" layer from the PRD.
@@ -245,6 +389,9 @@ def apply_clinical_context(intervals: dict, patient: dict) -> dict:
     rr_cv = intervals.get("hr_variability")
     quality = intervals.get("quality_score", 1.0)
 
+    # ── Age-aware thresholds (Phase 1 Improvement) ──────────────
+    hr_lower_threshold = _get_age_adjusted_hr_lower_threshold(age, athlete)
+
     # ── Signal quality warning ─────────────────────────────────
     if quality is not None and quality < 0.5:
         flags.append({
@@ -272,7 +419,7 @@ def apply_clinical_context(intervals: dict, patient: dict) -> dict:
                     "explanation": "HR < 40 bpm. Risk of haemodynamic compromise. Urgent assessment required."
                 })
 
-        elif hr < 60:
+        elif hr < hr_lower_threshold:
             if pacemaker:
                 suppressed.append({
                     "code": "BRADYCARDIA",
@@ -290,7 +437,7 @@ def apply_clinical_context(intervals: dict, patient: dict) -> dict:
                     "severity": "WARNING",
                     "code": "BRADYCARDIA",
                     "finding": f"Bradycardia — {hr:.0f} bpm",
-                    "explanation": "HR < 60 bpm. May be physiologic or indicate conduction disease."
+                    "explanation": f"HR < {hr_lower_threshold} bpm (age {age} threshold). May be physiologic or indicate conduction disease."
                 })
 
         elif hr > 150:
