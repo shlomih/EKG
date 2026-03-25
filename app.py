@@ -38,19 +38,29 @@ try:
 except ImportError:
     INTERVAL_ENGINE_AVAILABLE = False
 
-# Try CNN first, fall back to sklearn
+# Try ensemble first, then single CNN, then sklearn fallback
 _clf_model = None
 _clf_type = None
 CLASSIFIER_AVAILABLE = False
 
 try:
-    from cnn_classifier import load_cnn_classifier, predict_cnn
-    _clf_model = load_cnn_classifier()
+    from ensemble_classifier import load_ensemble, predict_ensemble
+    _clf_model = load_ensemble()
     if _clf_model is not None:
         CLASSIFIER_AVAILABLE = True
-        _clf_type = "cnn"
-except ImportError:
+        _clf_type = "ensemble"
+except Exception:
     pass
+
+if not CLASSIFIER_AVAILABLE:
+    try:
+        from cnn_classifier import load_cnn_classifier, predict_cnn
+        _clf_model = load_cnn_classifier()
+        if _clf_model is not None:
+            CLASSIFIER_AVAILABLE = True
+            _clf_type = "cnn"
+    except ImportError:
+        pass
 
 if not CLASSIFIER_AVAILABLE:
     try:
@@ -63,7 +73,7 @@ if not CLASSIFIER_AVAILABLE:
         pass
 
 
-# Hybrid classifier (CNN + voltage criteria)
+# Hybrid classifier (CNN + voltage criteria) — used for single-model fallback only
 HYBRID_AVAILABLE = False
 try:
     from hybrid_classifier import hybrid_predict
@@ -72,9 +82,11 @@ except ImportError:
     pass
 
 
-def classify_ecg(model, signal_12, fs, lead_names=None, sex="M"):
-    """Classify using hybrid (if available) or fallback to CNN/sklearn."""
-    if HYBRID_AVAILABLE and _clf_type == "cnn" and lead_names is not None:
+def classify_ecg(model, signal_12, fs, lead_names=None, sex="M", age=50):
+    """Classify using ensemble (preferred) or fallback to hybrid/CNN/sklearn."""
+    if _clf_type == "ensemble":
+        return predict_ensemble(model, signal_12, fs=fs, sex=sex, age=age)
+    elif HYBRID_AVAILABLE and _clf_type == "cnn" and lead_names is not None:
         return hybrid_predict(model, signal_12, fs, lead_names, sex=sex)
     elif _clf_type == "cnn":
         return predict_cnn(model, signal_12, fs)
@@ -533,12 +545,15 @@ if 'signal' in st.session_state:
 
     # ── AI Classification (when 12-lead data available) ──
     if CLASSIFIER_AVAILABLE and "signals_12" in st.session_state:
-        model_label = "Hybrid CNN" if (HYBRID_AVAILABLE and _clf_type == "cnn") else ("1D CNN" if _clf_type == "cnn" else "GradientBoosting")
+        model_label = ("Ensemble CNN" if _clf_type == "ensemble"
+                       else ("Hybrid CNN" if (HYBRID_AVAILABLE and _clf_type == "cnn")
+                             else ("1D CNN" if _clf_type == "cnn" else "GradientBoosting")))
         st.markdown(f"#### AI Diagnosis ({model_label})")
         result = classify_ecg(
             _clf_model, st.session_state.signals_12, st.session_state.fs,
             lead_names=st.session_state.get("lead_names"),
             sex=patient_profile.get("sex", "M"),
+            age=patient_profile.get("age", 50),
         )
 
         pred = result["prediction"]

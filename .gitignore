@@ -1,6 +1,15 @@
 examples/
 ekg_datasets/
 .idea/
+.claude/
+ekg_strips/
+install_log.txt
+
+# Large model files and binary data
+models/ecgfm/
+models/*.npz
+models/*.pt
+models/*.pkl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
