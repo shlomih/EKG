@@ -165,9 +165,38 @@ Supporting:
 ## Roadmap
 
 ### Phase 3A — AFIB detection (highest clinical value gap)
-Add Chapman-Shaoxing 12-lead dataset (~10k ECGs, detailed arrhythmia labels including AF).
-Train a dedicated AFIB detector or retrain the multi-label model with the merged dataset.
+Add Chapman-Shaoxing 12-lead dataset (45,152 ECGs, 3,889 confirmed AFIB cases).
+Retrain multi-label model on merged PTB-XL + Chapman-Shaoxing → adds AFIB as 13th label.
+Pipeline: `dataset_chapman.py` — download, SNOMED-CT mapping, merge with PTB-XL.
 Target: AFIB AUROC > 0.95.
+
+---
+
+### D-008 · ECG-FM Stage 2 on Google Colab free tier
+**Date:** 2026-03-26
+**Decision:** Run ECG-FM Stage 2 on Google Colab free T4 GPU instead of paid cloud.
+
+**Rationale:**
+- Free T4 has 15.6 GB VRAM, 13.6 GB system RAM — sufficient for the task
+- Training takes ~3 hours on T4 vs 9+ days on CPU — fits within free session limit
+- Cost: $0 vs $2–3 on AWS
+
+**Memory fix applied:** Deferred test signal loading — train+val signals preloaded into RAM (~4.5 GB), test signals loaded only after training loop finishes. Keeps peak RAM under 8 GB, well within Colab's 13.6 GB.
+
+**Auto unfreeze strategy:** Full encoder unfreeze (90M params) on CUDA, top-4 layers only on CPU. Same `ecgfm_finetune.py` works on both — device is auto-detected.
+
+**Setup gotchas encountered:**
+- GitHub repo is private → Colab can't `git clone` without a token. Solution: make repo public OR use `getpass` token injection. See `ecgfm_colab_stage2.ipynb`.
+- Google Drive folder name had a trailing space → `os.path.exists()` failed silently. Renamed folder to remove space.
+- PTB-XL download directly on Colab instance (~10 min) is faster than uploading from local machine.
+
+**Files the notebook expects in Google Drive `EKG_models/`:**
+- `mimic_iv_ecg_physionet_pretrained.pt` (1.1 GB) — ECG-FM pretrained encoder
+- `ecgfm_stage1.pt` (346 MB) — Stage 1 checkpoint (head trained, encoder frozen)
+
+**Status:** PTB-XL downloading on Colab (Cell 4). Training not yet started.
+
+---
 
 ### Phase 3B — ECG-FM on GPU
 If a GPU is available, resume ECG-FM Stage 2 fine-tuning:
@@ -205,5 +234,6 @@ PWA as an intermediate step.
 | v9+v10 Ensemble | 0.456 | 0.675 | Per-class threshold tuning |
 | ECG-FM Stage 1 (frozen) | 0.375 | 0.492 | Linear probe only |
 | **Multi-label CNN (12 class)** | **—** | **0.699** | **MacroAUROC=0.972** |
+| ECG-FM Stage 2 (partial freeze, 1 epoch) | 0.409 | 0.398 | Killed — too slow on CPU, 9.5h/epoch |
 
 Note: Multi-label F1 is not directly comparable to 5-class F1 (different task). The multi-label model is the current production model.
