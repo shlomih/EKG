@@ -38,19 +38,29 @@ try:
 except ImportError:
     INTERVAL_ENGINE_AVAILABLE = False
 
-# Try ensemble first, then single CNN, then sklearn fallback
+# Load order: multilabel > ensemble > single CNN > sklearn
 _clf_model = None
 _clf_type = None
 CLASSIFIER_AVAILABLE = False
 
 try:
-    from ensemble_classifier import load_ensemble, predict_ensemble
-    _clf_model = load_ensemble()
+    from multilabel_classifier import load_multilabel_cnn, predict_multilabel
+    _clf_model = load_multilabel_cnn()
     if _clf_model is not None:
         CLASSIFIER_AVAILABLE = True
-        _clf_type = "ensemble"
+        _clf_type = "multilabel"
 except Exception:
     pass
+
+if not CLASSIFIER_AVAILABLE:
+    try:
+        from ensemble_classifier import load_ensemble, predict_ensemble
+        _clf_model = load_ensemble()
+        if _clf_model is not None:
+            CLASSIFIER_AVAILABLE = True
+            _clf_type = "ensemble"
+    except Exception:
+        pass
 
 if not CLASSIFIER_AVAILABLE:
     try:
@@ -83,8 +93,10 @@ except ImportError:
 
 
 def classify_ecg(model, signal_12, fs, lead_names=None, sex="M", age=50):
-    """Classify using ensemble (preferred) or fallback to hybrid/CNN/sklearn."""
-    if _clf_type == "ensemble":
+    """Classify using multilabel (preferred) or fallback to ensemble/hybrid/CNN/sklearn."""
+    if _clf_type == "multilabel":
+        return predict_multilabel(model, signal_12, fs=fs, sex=sex, age=age)
+    elif _clf_type == "ensemble":
         return predict_ensemble(model, signal_12, fs=fs, sex=sex, age=age)
     elif HYBRID_AVAILABLE and _clf_type == "cnn" and lead_names is not None:
         return hybrid_predict(model, signal_12, fs, lead_names, sex=sex)
@@ -545,9 +557,13 @@ if 'signal' in st.session_state:
 
     # ── AI Classification (when 12-lead data available) ──
     if CLASSIFIER_AVAILABLE and "signals_12" in st.session_state:
-        model_label = ("Ensemble CNN" if _clf_type == "ensemble"
-                       else ("Hybrid CNN" if (HYBRID_AVAILABLE and _clf_type == "cnn")
-                             else ("1D CNN" if _clf_type == "cnn" else "GradientBoosting")))
+        model_label = (
+            "Multi-Label CNN (12 conditions)" if _clf_type == "multilabel"
+            else "Ensemble CNN" if _clf_type == "ensemble"
+            else "Hybrid CNN" if (HYBRID_AVAILABLE and _clf_type == "cnn")
+            else "1D CNN" if _clf_type == "cnn"
+            else "GradientBoosting"
+        )
         st.markdown(f"#### AI Diagnosis ({model_label})")
         result = classify_ecg(
             _clf_model, st.session_state.signals_12, st.session_state.fs,
@@ -556,63 +572,108 @@ if 'signal' in st.session_state:
             age=patient_profile.get("age", 50),
         )
 
-        pred = result["prediction"]
-        desc = result["description"]
-        conf = result["confidence"]
+        # ── Multi-label display ──
+        if _clf_type == "multilabel":
+            urgency_colors = {3: "#FF4444", 2: "#FF8C00", 1: "#FFD700", 0: "#00C49F"}
+            urgency_labels = {3: "Critical", 2: "Abnormal", 1: "Mild finding", 0: "Normal"}
+            conditions = result.get("conditions", [result["primary"]])
+            per_class  = result.get("per_class", {})
 
-        # Colour the prediction by class
-        pred_colors = {
-            "NORM": "#00C49F", "MI": "#FF4444", "STTC": "#FF8C00",
-            "HYP": "#FFA500", "CD": "#FFD700",
-        }
-        color = pred_colors.get(pred, "#888")
+            if not conditions:
+                conditions = [result["primary"]]
 
-        st.markdown(f"""
-            <div style="background-color:{color}; padding:12px; border-radius:8px;
-                        text-align:center; margin-bottom:12px;">
-                <h3 style="color:white; margin:0;">{pred} — {desc}</h3>
-                <p style="color:rgba(255,255,255,0.85); margin:4px 0 0 0;">
-                    Confidence: {conf:.0%}
-                </p>
-            </div>
-        """, unsafe_allow_html=True)
+            for code in conditions:
+                info    = per_class.get(code, {})
+                prob    = info.get("prob", result["confidence"])
+                urg     = info.get("urgency", 0)
+                desc    = info.get("description", code)
+                color   = urgency_colors.get(urg, "#888")
+                badge   = urgency_labels.get(urg, "")
+                st.markdown(f"""
+                    <div style="background:{color}; padding:10px 14px; border-radius:8px;
+                                margin-bottom:8px; display:flex; justify-content:space-between;
+                                align-items:center;">
+                        <div>
+                            <span style="color:white; font-weight:bold; font-size:1.05em;">
+                                {code}
+                            </span>
+                            <span style="color:rgba(255,255,255,0.85); margin-left:10px;">
+                                {desc}
+                            </span>
+                        </div>
+                        <div style="text-align:right;">
+                            <span style="color:white; font-size:0.85em;">{badge}</span>
+                            <span style="color:white; font-weight:bold; margin-left:10px;">
+                                {prob:.0%}
+                            </span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
 
-        # Probability bar chart
-        probs = result["probabilities"]
-        prob_cols = st.columns(len(probs))
-        for i, (cls, prob) in enumerate(sorted(probs.items(), key=lambda x: -x[1])):
-            prob_cols[i].metric(cls, f"{prob:.0%}")
+            with st.expander("All condition probabilities"):
+                sorted_codes = sorted(per_class.items(), key=lambda x: -x[1].get("prob", 0))
+                prob_cols = st.columns(4)
+                for i, (code, info) in enumerate(sorted_codes):
+                    detected = info.get("detected", False)
+                    prob     = info.get("prob", 0)
+                    label    = f"{'✓ ' if detected else ''}{code}"
+                    prob_cols[i % 4].metric(label, f"{prob:.0%}")
 
-        # Hybrid classifier details (voltage criteria, adjustments)
-        if result.get("voltage_criteria") or result.get("adjustment_applied"):
-            with st.expander("Hybrid classifier details"):
-                if result.get("adjustment_applied"):
-                    st.info(f"Adjustment: {result['adjustment_applied']}")
-                    st.caption(f"CNN raw: {result.get('cnn_raw_prediction')} ({result.get('cnn_raw_confidence', 0):.0%})")
-                vc = result.get("voltage_criteria", {})
-                if vc:
-                    vc_cols = st.columns(3)
-                    sl = vc.get("sokolow_lyon", {})
-                    cn = vc.get("cornell", {})
-                    rv = vc.get("rvh_r_v1", {})
-                    vc_cols[0].metric(
-                        "Sokolow-Lyon",
-                        f"{sl.get('value', 0):.2f} mV",
-                        "MET" if sl.get("met") else "not met",
-                        delta_color="inverse" if sl.get("met") else "off",
-                    )
-                    vc_cols[1].metric(
-                        "Cornell",
-                        f"{cn.get('value', 0):.2f} mV",
-                        "MET" if cn.get("met") else "not met",
-                        delta_color="inverse" if cn.get("met") else "off",
-                    )
-                    vc_cols[2].metric(
-                        "RVH (R in V1)",
-                        f"{rv.get('value', 0):.2f} mV",
-                        "MET" if rv.get("met") else "not met",
-                        delta_color="inverse" if rv.get("met") else "off",
-                    )
+        # ── Legacy single-label display (ensemble / CNN / sklearn) ──
+        else:
+            pred = result["prediction"]
+            desc = result["description"]
+            conf = result["confidence"]
+            pred_colors = {
+                "NORM": "#00C49F", "MI": "#FF4444", "STTC": "#FF8C00",
+                "HYP": "#FFA500", "CD": "#FFD700",
+            }
+            color = pred_colors.get(pred, "#888")
+            st.markdown(f"""
+                <div style="background-color:{color}; padding:12px; border-radius:8px;
+                            text-align:center; margin-bottom:12px;">
+                    <h3 style="color:white; margin:0;">{pred} — {desc}</h3>
+                    <p style="color:rgba(255,255,255,0.85); margin:4px 0 0 0;">
+                        Confidence: {conf:.0%}
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+
+            probs = result["probabilities"]
+            prob_cols = st.columns(len(probs))
+            for i, (cls, prob) in enumerate(sorted(probs.items(), key=lambda x: -x[1])):
+                prob_cols[i].metric(cls, f"{prob:.0%}")
+
+            # Hybrid classifier details (voltage criteria, adjustments)
+            if result.get("voltage_criteria") or result.get("adjustment_applied"):
+                with st.expander("Hybrid classifier details"):
+                    if result.get("adjustment_applied"):
+                        st.info(f"Adjustment: {result['adjustment_applied']}")
+                        st.caption(f"CNN raw: {result.get('cnn_raw_prediction')} ({result.get('cnn_raw_confidence', 0):.0%})")
+                    vc = result.get("voltage_criteria", {})
+                    if vc:
+                        vc_cols = st.columns(3)
+                        sl = vc.get("sokolow_lyon", {})
+                        cn = vc.get("cornell", {})
+                        rv = vc.get("rvh_r_v1", {})
+                        vc_cols[0].metric(
+                            "Sokolow-Lyon",
+                            f"{sl.get('value', 0):.2f} mV",
+                            "MET" if sl.get("met") else "not met",
+                            delta_color="inverse" if sl.get("met") else "off",
+                        )
+                        vc_cols[1].metric(
+                            "Cornell",
+                            f"{cn.get('value', 0):.2f} mV",
+                            "MET" if cn.get("met") else "not met",
+                            delta_color="inverse" if cn.get("met") else "off",
+                        )
+                        vc_cols[2].metric(
+                            "RVH (R in V1)",
+                            f"{rv.get('value', 0):.2f} mV",
+                            "MET" if rv.get("met") else "not met",
+                            delta_color="inverse" if rv.get("met") else "off",
+                        )
 
     # ── Clinical interval analysis (Lead II) ──
     run_full_analysis(st.session_state.signal, st.session_state.fs, patient_profile)

@@ -4,9 +4,9 @@ multilabel_classifier.py
 Multi-label ECG classifier: expands from 5 PTB-XL superclasses to 12 specific
 clinically actionable conditions using exact SCP codes.
 
-12 Target Labels (all ≥ 500 samples in PTB-XL, confidence ≥ 50%):
+12 Target Labels (all ≥ 536 samples in PTB-XL, confidence ≥ 50%):
   NORM   - Normal ECG                         (9,438)
-  AFIB   - Atrial fibrillation                (1,514) ← NEW
+  PVC    - Ventricular premature complex      (1,027)
   LVH    - Left ventricular hypertrophy       (1,751)
   IMI    - Inferior myocardial infarction     (1,714)
   ASMI   - Anteroseptal MI                    (2,007)
@@ -16,7 +16,8 @@ clinically actionable conditions using exact SCP codes.
   1AVB   - First-degree AV block              (  790)
   ISC_   - Non-specific ischemic ST changes   (1,260)
   NDT    - Non-diagnostic T abnormalities     (1,824)
-  STACH  - Sinus tachycardia                  (  826) ← NEW
+  IRBBB  - Incomplete RBBB                    (1,115)
+  NOTE: AFIB has only 48 confirmed cases in PTB-XL → needs Chapman-Shaoxing (Phase 3)
 
 Architecture:
   Reuses ECGNetJoint backbone from cnn_classifier.py (same CNN, same aux features)
@@ -61,18 +62,19 @@ from cnn_classifier import (
 # ---------------------------------------------------------------------------
 
 MULTILABEL_CODES = [
-    "NORM",   # 0
-    "AFIB",   # 1  ← rhythm code
-    "LVH",    # 2
-    "IMI",    # 3
-    "ASMI",   # 4
-    "CLBBB",  # 5
-    "CRBBB",  # 6
-    "LAFB",   # 7
-    "1AVB",   # 8
-    "ISC_",   # 9
-    "NDT",    # 10
-    "STACH",  # 11 ← rhythm code
+    "NORM",   # 0  Normal ECG                         (9,438)
+    "PVC",    # 1  Ventricular premature complex       (1,027) ← replaces AFIB (only 48 in PTB-XL)
+    "LVH",    # 2  Left ventricular hypertrophy        (1,751)
+    "IMI",    # 3  Inferior myocardial infarction      (1,714)
+    "ASMI",   # 4  Anteroseptal MI                     (2,007)
+    "CLBBB",  # 5  Complete LBBB                       (  536)
+    "CRBBB",  # 6  Complete RBBB                       (  540)
+    "LAFB",   # 7  Left anterior fascicular block      (1,622)
+    "1AVB",   # 8  First-degree AV block               (  790)
+    "ISC_",   # 9  Non-specific ischemic ST changes    (1,260)
+    "NDT",    # 10 Non-diagnostic T abnormalities      (1,824)
+    "IRBBB",  # 11 Incomplete RBBB                     (1,115) ← replaces STACH (only 4 in PTB-XL)
+    # NOTE: AFIB needs Chapman-Shaoxing dataset (Phase 3) — PTB-XL has only 48 confirmed cases
 ]
 
 N_ML_CLASSES  = len(MULTILABEL_CODES)
@@ -80,7 +82,7 @@ CODE_TO_IDX   = {c: i for i, c in enumerate(MULTILABEL_CODES)}
 
 CONDITION_DESCRIPTIONS = {
     "NORM":  "Normal ECG",
-    "AFIB":  "Atrial Fibrillation",
+    "PVC":   "Ventricular Premature Complex",
     "LVH":   "Left Ventricular Hypertrophy",
     "IMI":   "Inferior Myocardial Infarction",
     "ASMI":  "Anteroseptal Myocardial Infarction",
@@ -90,14 +92,14 @@ CONDITION_DESCRIPTIONS = {
     "1AVB":  "First-Degree AV Block",
     "ISC_":  "Non-Specific Ischemic ST Changes",
     "NDT":   "Non-Diagnostic T Abnormalities",
-    "STACH": "Sinus Tachycardia",
+    "IRBBB": "Incomplete Right Bundle Branch Block",
 }
 
 # Clinical urgency tier (used for sorting output)
 URGENCY = {
-    "AFIB": 3, "IMI": 3, "ASMI": 3, "CLBBB": 3,
-    "LVH": 2, "CRBBB": 2, "ISC_": 2, "STACH": 2,
-    "LAFB": 1, "1AVB": 1, "NDT": 1,
+    "IMI": 3, "ASMI": 3, "CLBBB": 3,
+    "LVH": 2, "PVC": 2, "CRBBB": 2, "ISC_": 2,
+    "LAFB": 1, "1AVB": 1, "NDT": 1, "IRBBB": 1,
     "NORM": 0,
 }
 
