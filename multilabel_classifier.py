@@ -4,7 +4,7 @@ multilabel_classifier.py
 Multi-label ECG classifier: expands from 5 PTB-XL superclasses to 12 specific
 clinically actionable conditions using exact SCP codes.
 
-12 Target Labels (all ≥ 536 samples in PTB-XL, confidence ≥ 50%):
+12 Target Labels (all >= 536 samples in PTB-XL, confidence >= 50%):
   NORM   - Normal ECG                         (9,438)
   PVC    - Ventricular premature complex      (1,027)
   LVH    - Left ventricular hypertrophy       (1,751)
@@ -133,7 +133,7 @@ CLINICAL_GUIDANCE = {
     },
     "CLBBB": {
         "action": "If new LBBB: treat as STEMI equivalent until proven otherwise. Check prior ECGs.",
-        "note":   "Masks ischemia. Sgarbossa criteria if MI suspected. QRS ≥120ms with aberrant morphology.",
+        "note":   "Masks ischemia. Sgarbossa criteria if MI suspected. QRS >=120ms with aberrant morphology.",
     },
     "CRBBB": {
         "action": "If isolated RBBB: usually benign. If new + anterior MI: consider Brugada pattern.",
@@ -543,6 +543,107 @@ def predict_multilabel(model, signal_12: np.ndarray, fs: int = 500,
                         }
                         for i, code in enumerate(MULTILABEL_CODES)},
     }
+
+
+# ---------------------------------------------------------------------------
+# Patient-context post-processing
+# ---------------------------------------------------------------------------
+
+def apply_patient_context(result: dict, patient_profile: dict) -> dict:
+    """
+    Augment per_class action/note fields with patient-specific context.
+    Modifies result in-place and returns it.
+
+    patient_profile keys used:
+      age (int), sex ("M"/"F"), has_pacemaker (bool),
+      is_athlete (bool), is_pregnant (bool), k_level (float mEq/L)
+    """
+    age         = patient_profile.get("age", 50)
+    sex         = patient_profile.get("sex", "M")
+    pacemaker   = patient_profile.get("has_pacemaker", False)
+    athlete     = patient_profile.get("is_athlete", False)
+    pregnant    = patient_profile.get("is_pregnant", False)
+    k           = float(patient_profile.get("k_level", 4.0))
+    pc          = result["per_class"]
+
+    def _prepend_note(code, text):
+        if code in pc:
+            existing = pc[code]["note"]
+            pc[code]["note"] = text + (" — " + existing if existing else "")
+
+    def _prepend_action(code, text):
+        if code in pc:
+            existing = pc[code]["action"]
+            pc[code]["action"] = text + (" " + existing if existing else "")
+
+    def _replace_note(code, text):
+        if code in pc:
+            pc[code]["note"] = text
+
+    def _replace_action(code, text):
+        if code in pc:
+            pc[code]["action"] = text
+
+    # ── Pacemaker ──────────────────────────────────────────────────────────
+    if pacemaker:
+        pacemaker_warn = "⚠ Pacemaker present — compare with pre-pacemaker ECG."
+        for code in ("CLBBB", "CRBBB"):
+            _prepend_note(code, pacemaker_warn + " Pacing morphology may mimic bundle branch block.")
+        for code in ("LAFB", "1AVB", "IRBBB"):
+            _prepend_note(code, pacemaker_warn + " Conduction findings may reflect pacing.")
+
+    # ── Athlete ─────────────────────────────────────────────────────────────
+    if athlete:
+        _prepend_note("LVH",
+            "Athlete: voltage criteria may reflect physiologic cardiac remodeling (athletic heart). "
+            "Echo needed to differentiate from HCM.")
+        _replace_note("IRBBB",
+            "Athlete: IRBBB is a common normal variant — likely benign in this context.")
+        _prepend_note("CRBBB",
+            "Athlete: isolated RBBB is more prevalent in trained athletes — likely benign if no other findings.")
+        _prepend_note("STACH",
+            "Athlete: verify resting HR baseline — trained athletes can have variable heart rates.")
+
+    # ── Potassium ───────────────────────────────────────────────────────────
+    if k < 3.5:
+        hypo_tag = f"Hypokalemia (K+={k:.1f} mEq/L): "
+        _prepend_note("NDT",  hypo_tag + "T-wave changes may be electrolyte-related. Treat and repeat ECG.")
+        _prepend_note("ISC_", hypo_tag + "ST-T changes may be electrolyte-related. Treat and repeat ECG.")
+        _prepend_note("PVC",  hypo_tag + "Hypokalemia increases ectopy risk. Replete potassium urgently.")
+    elif k > 5.5:
+        hyper_tag = f"Hyperkalemia (K+={k:.1f} mEq/L) — electrolyte emergency: "
+        _prepend_note("NDT",   hyper_tag + "Peaked T-waves are an early sign. Monitor QRS width closely.")
+        _prepend_note("ISC_",  hyper_tag + "ST changes may be electrolyte-related.")
+        _prepend_note("PVC",   hyper_tag + "Arrhythmia risk elevated. Urgent correction needed.")
+        for code in ("CLBBB", "CRBBB", "IRBBB"):
+            _prepend_note(code, hyper_tag + "Wide QRS may reflect hyperkalemia-induced conduction delay, not true BBB.")
+
+    # ── Age-specific ─────────────────────────────────────────────────────────
+    if age < 40 and pc.get("LVH", {}).get("detected"):
+        _prepend_note("LVH",
+            f"Young patient (age {age}): consider hypertrophic cardiomyopathy (HCM). "
+            "Echo essential — screen first-degree relatives.")
+
+    if age > 75 and pc.get("CLBBB", {}).get("detected"):
+        _prepend_note("CLBBB",
+            f"Elderly patient (age {age}): higher pre-test probability of ischemic etiology. "
+            "If new LBBB and chest pain, treat as STEMI-equivalent.")
+
+    # ── Pregnancy ──────────────────────────────────────────────────────────
+    if pregnant:
+        _replace_action("STACH",
+            "Pregnancy: HR up to 110 bpm is normal. Investigate if >120 or symptomatic (rule out PE, sepsis, PPH).")
+        _prepend_note("LVH",
+            "Pregnancy-related volume overload can cause voltage changes — reassess postpartum.")
+        _prepend_note("1AVB",
+            "Mild PR prolongation can occur in normal pregnancy — monitor for progression.")
+
+    # ── Sex-specific Cornell note ─────────────────────────────────────────
+    if sex == "F" and pc.get("LVH", {}).get("detected"):
+        _prepend_note("LVH",
+            "Female: Cornell threshold is lower (>=2.0 mV vs 2.8 mV in males) — criterion may be met at lower voltages.")
+
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -572,6 +572,11 @@ if 'signal' in st.session_state:
             age=patient_profile.get("age", 50),
         )
 
+        # Apply patient context to multi-label results
+        if _clf_type == "multilabel":
+            from multilabel_classifier import apply_patient_context
+            result = apply_patient_context(result, patient_profile)
+
         # ── Multi-label display ──
         if _clf_type == "multilabel":
             urgency_colors = {3: "#FF4444", 2: "#FF8C00", 1: "#FFD700", 0: "#00C49F"}
