@@ -82,6 +82,7 @@ CODE_TO_IDX   = {c: i for i, c in enumerate(MULTILABEL_CODES)}
 
 CONDITION_DESCRIPTIONS = {
     "NORM":  "Normal ECG",
+    "AFIB":  "Atrial Fibrillation",
     "PVC":   "Ventricular Premature Complex",
     "LVH":   "Left Ventricular Hypertrophy",
     "IMI":   "Inferior Myocardial Infarction",
@@ -93,14 +94,75 @@ CONDITION_DESCRIPTIONS = {
     "ISC_":  "Non-Specific Ischemic ST Changes",
     "NDT":   "Non-Diagnostic T Abnormalities",
     "IRBBB": "Incomplete Right Bundle Branch Block",
+    "STACH": "Sinus Tachycardia",
 }
 
 # Clinical urgency tier (used for sorting output)
 URGENCY = {
-    "IMI": 3, "ASMI": 3, "CLBBB": 3,
+    "AFIB": 3, "IMI": 3, "ASMI": 3, "CLBBB": 3,
     "LVH": 2, "PVC": 2, "CRBBB": 2, "ISC_": 2,
-    "LAFB": 1, "1AVB": 1, "NDT": 1, "IRBBB": 1,
+    "LAFB": 1, "1AVB": 1, "NDT": 1, "IRBBB": 1, "STACH": 1,
     "NORM": 0,
+}
+
+# Clinical guidance shown in the app for each detected condition
+CLINICAL_GUIDANCE = {
+    "NORM": {
+        "action": "No acute findings. Routine follow-up as indicated.",
+        "note":   "",
+    },
+    "AFIB": {
+        "action": "Assess stroke risk (CHA₂DS₂-VASc score). Consider anticoagulation. Rate or rhythm control strategy.",
+        "note":   "Irregular irregular rhythm — no distinct P waves.",
+    },
+    "PVC": {
+        "action": "Assess frequency and symptoms. If >10% of beats or symptomatic, refer for Holter + echo.",
+        "note":   "Isolated PVCs are common and often benign. Frequent PVCs may indicate structural disease.",
+    },
+    "LVH": {
+        "action": "Evaluate for hypertension, hypertrophic cardiomyopathy. Echo recommended.",
+        "note":   "Voltage criteria met. Cornell/Sokolow-Lyon thresholds exceeded.",
+    },
+    "IMI": {
+        "action": "If acute: activate cath lab. Check reciprocal changes in I/aVL. RV involvement (V1–V4R).",
+        "note":   "Inferior territory: RCA or LCx. ST elevation II, III, aVF.",
+    },
+    "ASMI": {
+        "action": "If acute: activate cath lab. LAD territory. Anterior ST elevation in V1–V4.",
+        "note":   "Anterior/anteroseptal MI — high-risk territory. Check for LBBB masking.",
+    },
+    "CLBBB": {
+        "action": "If new LBBB: treat as STEMI equivalent until proven otherwise. Check prior ECGs.",
+        "note":   "Masks ischemia. Sgarbossa criteria if MI suspected. QRS ≥120ms with aberrant morphology.",
+    },
+    "CRBBB": {
+        "action": "If isolated RBBB: usually benign. If new + anterior MI: consider Brugada pattern.",
+        "note":   "rSR' in V1, wide S in I/V6. May be normal variant or reflect RV strain.",
+    },
+    "LAFB": {
+        "action": "Usually benign. If with RBBB (bifascicular block): monitor for complete heart block.",
+        "note":   "Left axis deviation (−45° to −90°), small Q in I/aVL.",
+    },
+    "1AVB": {
+        "action": "Usually benign. If PR >300ms or symptomatic: Holter monitoring.",
+        "note":   "PR interval >200ms. Monitor for progression to higher degree block.",
+    },
+    "ISC_": {
+        "action": "Correlate with symptoms. If chest pain: rule out ACS. Exercise stress test if stable.",
+        "note":   "Non-specific ST/T changes. Not diagnostic alone — needs clinical context.",
+    },
+    "NDT": {
+        "action": "Non-diagnostic. Correlate clinically. Repeat ECG if symptoms change.",
+        "note":   "T-wave abnormalities without specific pattern. Wide differential.",
+    },
+    "IRBBB": {
+        "action": "Usually a normal variant, especially in young patients. No specific action required.",
+        "note":   "Incomplete RBBB: rSR' in V1, QRS <120ms.",
+    },
+    "STACH": {
+        "action": "Identify and treat underlying cause (fever, pain, dehydration, anxiety, PE, sepsis).",
+        "note":   "HR >100 bpm with normal P waves. Sinus tachycardia is a symptom, not a primary diagnosis.",
+    },
 }
 
 MODEL_PATH = "models/ecg_multilabel.pt"
@@ -472,10 +534,12 @@ def predict_multilabel(model, signal_12: np.ndarray, fs: int = 500,
         "conditions":  conditions,
         "scores":      scores,
         "per_class":   {code: {
-                            "prob": float(probs[i]),
-                            "detected": bool(probs[i] >= threshold),
-                            "description": CONDITION_DESCRIPTIONS[code],
-                            "urgency": URGENCY.get(code, 0),
+                            "prob":        float(probs[i]),
+                            "detected":    bool(probs[i] >= threshold),
+                            "description": CONDITION_DESCRIPTIONS.get(code, code),
+                            "urgency":     URGENCY.get(code, 0),
+                            "action":      CLINICAL_GUIDANCE.get(code, {}).get("action", ""),
+                            "note":        CLINICAL_GUIDANCE.get(code, {}).get("note", ""),
                         }
                         for i, code in enumerate(MULTILABEL_CODES)},
     }

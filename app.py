@@ -587,26 +587,31 @@ if 'signal' in st.session_state:
                 prob    = info.get("prob", result["confidence"])
                 urg     = info.get("urgency", 0)
                 desc    = info.get("description", code)
+                action  = info.get("action", "")
+                note    = info.get("note", "")
                 color   = urgency_colors.get(urg, "#888")
                 badge   = urgency_labels.get(urg, "")
                 st.markdown(f"""
-                    <div style="background:{color}; padding:10px 14px; border-radius:8px;
-                                margin-bottom:8px; display:flex; justify-content:space-between;
-                                align-items:center;">
-                        <div>
-                            <span style="color:white; font-weight:bold; font-size:1.05em;">
-                                {code}
-                            </span>
-                            <span style="color:rgba(255,255,255,0.85); margin-left:10px;">
-                                {desc}
-                            </span>
+                    <div style="background:{color}; padding:12px 14px; border-radius:8px;
+                                margin-bottom:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div>
+                                <span style="color:white; font-weight:bold; font-size:1.05em;">
+                                    {code}
+                                </span>
+                                <span style="color:rgba(255,255,255,0.85); margin-left:10px;">
+                                    {desc}
+                                </span>
+                            </div>
+                            <div style="text-align:right;">
+                                <span style="color:white; font-size:0.85em;">{badge}</span>
+                                <span style="color:white; font-weight:bold; margin-left:10px;">
+                                    {prob:.0%}
+                                </span>
+                            </div>
                         </div>
-                        <div style="text-align:right;">
-                            <span style="color:white; font-size:0.85em;">{badge}</span>
-                            <span style="color:white; font-weight:bold; margin-left:10px;">
-                                {prob:.0%}
-                            </span>
-                        </div>
+                        {f'<div style="color:rgba(255,255,255,0.92); font-size:0.88em; margin-top:6px;">⚡ {action}</div>' if action else ""}
+                        {f'<div style="color:rgba(255,255,255,0.70); font-size:0.82em; margin-top:2px; font-style:italic;">{note}</div>' if note else ""}
                     </div>
                 """, unsafe_allow_html=True)
 
