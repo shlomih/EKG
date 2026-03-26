@@ -554,37 +554,44 @@ def train_stage2(batch_size=8, n_epochs=20, patience=8):
     test_mask  = (folds == 10)
     train_paths, train_labels, class_counts = resample_train(paths, labels, folds)
 
-    os_counts = np.bincount(train_labels, minlength=N_CLASSES)
-    all_unique = list(set(train_paths + paths[val_mask].tolist() + paths[test_mask].tolist()))
-    raw_cache, aux_cache = preload_raw(all_unique)
+    os_counts  = np.bincount(train_labels, minlength=N_CLASSES)
+    test_paths = paths[test_mask].tolist()
+    test_labels_list = labels[test_mask].tolist()
+
+    # Load train+val only — keeps peak RAM ~4.5 GB instead of ~5.5 GB (important on free Colab)
+    trainval_unique = list(set(train_paths + paths[val_mask].tolist()))
+    raw_cache, aux_cache = preload_raw(trainval_unique)
 
     train_ds = ECGFMDataset(train_paths, train_labels, raw_cache, aux_cache, demographics, augment=True)
     val_ds   = ECGFMDataset(paths[val_mask].tolist(), labels[val_mask].tolist(),
                             raw_cache, aux_cache, demographics, augment=False)
-    test_ds  = ECGFMDataset(paths[test_mask].tolist(), labels[test_mask].tolist(),
-                            raw_cache, aux_cache, demographics, augment=False)
-    print(f"  Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"  Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_paths)} (loaded after training)")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=0)
 
     enc   = ECGFMEncoder.from_pretrained(CKPT_FM, map_location=str(device))
     model = ECGFMClassifier(enc).to(device)
     s1    = torch.load(CKPT_S1, map_location=device, weights_only=False)
     model.load_state_dict(s1["model_state"])
-    model.unfreeze_top_layers(n_top=4)   # freeze bottom 8 layers, unfreeze top 4 + layer_norm
+    # Full unfreeze on GPU (fast enough); partial freeze on CPU (saves time)
+    if device.type == "cuda":
+        model.unfreeze_encoder()
+        unfreeze_desc = "full encoder"
+    else:
+        model.unfreeze_top_layers(n_top=4)
+        unfreeze_desc = "top 4 transformer layers + head"
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Loaded stage-1 (HYP F1={s1['best_hyp_f1']:.3f}  MacroF1={s1['best_macro']:.3f})")
-    print(f"  Trainable params: {n_trainable/1e6:.1f}M  (top 4 transformer layers + head)")
+    print(f"  Trainable params: {n_trainable/1e6:.1f}M  ({unfreeze_desc})")
 
     cw = 1.0 / (os_counts.astype(np.float32) + 1e-6)
     cw = torch.from_numpy(cw / cw.sum() * N_CLASSES).to(device)
     criterion = AsymmetricLoss(weight=cw, gamma_pos=0.0, gamma_neg=4.0,
                                margin=0.05, label_smoothing=0.05)
-    top_layer_params = [p for p in model.encoder.parameters() if p.requires_grad]
+    encoder_params = [p for p in model.encoder.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW([
-        {"params": top_layer_params,        "lr": 1e-5},
+        {"params": encoder_params,          "lr": 1e-5},
         {"params": model.head.parameters(), "lr": 1e-4},
     ], weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -635,6 +642,11 @@ def train_stage2(batch_size=8, n_epochs=20, patience=8):
     if best_state:
         model.load_state_dict(best_state)
 
+    # Load test signals now (deferred to save RAM during training)
+    print("  Loading test signals for final evaluation...")
+    test_raw, test_aux = preload_raw(test_paths)
+    test_ds     = ECGFMDataset(test_paths, test_labels_list, test_raw, test_aux, demographics, augment=False)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     tm = evaluate_full(model, test_loader, device)
     print_test(tm)
 
