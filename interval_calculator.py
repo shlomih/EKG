@@ -479,12 +479,26 @@ def apply_clinical_context(intervals: dict, patient: dict) -> dict:
                 })
 
         elif pr < 120:
-            flags.append({
-                "severity": "WARNING",
-                "code": "SHORT_PR",
-                "finding": f"Short PR interval — {pr:.0f} ms",
-                "explanation": "PR < 120 ms. Consider pre-excitation (WPW syndrome) or AV nodal bypass tract."
-            })
+            if qrs is not None and qrs >= 110 and not pacemaker:
+                # Short PR + borderline/wide QRS → specific WPW pattern
+                flags.append({
+                    "severity": "WARNING",
+                    "code": "WPW_SCREEN",
+                    "finding": f"WPW pattern — short PR ({pr:.0f} ms) + wide QRS ({qrs:.0f} ms)",
+                    "explanation": (
+                        "Short PR with wide or borderline-wide QRS strongly suggests "
+                        "Wolff-Parkinson-White syndrome or other pre-excitation. "
+                        "Delta wave may be visible in V1-V3. Risk of rapid conduction during AF. "
+                        "Electrophysiology referral recommended."
+                    ),
+                })
+            else:
+                flags.append({
+                    "severity": "WARNING",
+                    "code": "SHORT_PR",
+                    "finding": f"Short PR interval — {pr:.0f} ms",
+                    "explanation": "PR < 120 ms. Consider pre-excitation (WPW syndrome) or AV nodal bypass tract."
+                })
 
     # ── QRS Duration ───────────────────────────────────────────
     if qrs is not None:

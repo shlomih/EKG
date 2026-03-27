@@ -19,7 +19,49 @@ Usage:
 
 import cv2
 import numpy as np
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, find_peaks, resample
+
+# Standard ECG paper calibration constants
+# Small grid square = 1 mm × 1 mm
+# At 25 mm/s  and 10 mm/mV: 1 small sq = 40 ms × 0.1 mV
+DEFAULT_PAPER_SPEED = 25   # mm/s  (25 or 50 are the two clinical standards)
+DEFAULT_MM_PER_MV   = 10   # mm/mV (5, 10, or 20 mm/mV)
+TARGET_FS           = 500  # Hz — output sampling rate expected by the rest of the pipeline
+
+
+def _detect_grid_spacing(grid_mask):
+    """
+    Measure the pixel spacing between grid lines in X and Y directions.
+
+    Returns:
+        (px_per_mm_x, px_per_mm_y): pixels per 1 mm of ECG paper.
+        Either value is None if detection failed (caller should use fallback).
+    """
+    def _find_median_line_spacing(proj):
+        """Find the dominant grid-line spacing in a 1-D projection."""
+        if np.max(proj) < 5:
+            return None   # no grid visible
+        peaks, _ = find_peaks(proj, distance=3,
+                               prominence=np.std(proj) * 0.4)
+        if len(peaks) < 4:
+            return None
+        spacings = np.diff(peaks)
+        # The small-square spacing is the most common short spacing.
+        # Large squares (every 5th line) appear as 5× the small spacing — exclude them.
+        median_sp = float(np.median(spacings))
+        small = spacings[spacings < median_sp * 1.8]
+        if len(small) < 2:
+            small = spacings
+        sp = float(np.median(small))
+        # Sanity: a grid square should be between 3 and 60 pixels wide
+        return sp if 3 < sp < 60 else None
+
+    col_proj = np.sum(grid_mask, axis=0).astype(float)
+    row_proj = np.sum(grid_mask, axis=1).astype(float)
+
+    px_x = _find_median_line_spacing(col_proj)
+    px_y = _find_median_line_spacing(row_proj)
+    return px_x, px_y
 
 
 def _detect_grid_mask(img_bgr):
@@ -157,16 +199,25 @@ def _compute_quality_score(trace_binary):
     return round(min(1.0, (coverage * 0.5 + continuity * 0.5)), 3)
 
 
-def extract_signal_from_image(image_path, debug=False):
+def extract_signal_from_image(image_path,
+                              paper_speed: float = DEFAULT_PAPER_SPEED,
+                              mm_per_mv: float = DEFAULT_MM_PER_MV,
+                              debug: bool = False):
     """
-    Extract 1D ECG signal from a paper strip image.
+    Extract 1D ECG signal from a paper strip image, calibrated to physical units.
 
     Args:
-        image_path: path to the image file
-        debug: if True, show intermediate images
+        image_path  : path to the image file
+        paper_speed : recording paper speed in mm/s (25 or 50)
+        mm_per_mv   : voltage gain in mm/mV (5, 10, or 20)
+        debug       : if True, show intermediate images
 
     Returns:
-        numpy array: extracted signal (centered around 0)
+        dict with keys:
+            signal   : numpy array, calibrated in mV, resampled to TARGET_FS Hz
+            quality  : float 0-1
+            actual_fs: float — estimated source sampling rate (px/s) before resampling
+            px_per_mm: (x, y) grid calibration in pixels/mm, or (None, None) if failed
     """
     img = cv2.imread(image_path)
     if img is None:
@@ -174,19 +225,42 @@ def extract_signal_from_image(image_path, debug=False):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Detect and remove grid
+    # Detect grid
     grid_mask = _detect_grid_mask(img)
 
-    # Extract trace
+    # Measure grid spacing for calibration
+    px_per_mm_x, px_per_mm_y = _detect_grid_spacing(grid_mask)
+
+    # Extract trace (returns Y-pixel positions, inverted, centered at 0)
     trace = _extract_trace(gray, grid_mask)
+    signal_px = _trace_to_signal(trace, use_weighted=True)
 
-    # Convert to 1D signal
-    signal = _trace_to_signal(trace, use_weighted=True)
+    # ── Amplitude calibration ─────────────────────────────────────────────
+    # Each pixel in Y corresponds to: 1 / (px_per_mm_y * mm_per_mv) mV
+    if px_per_mm_y is not None and px_per_mm_y > 0:
+        signal_mv = signal_px / (px_per_mm_y * mm_per_mv)
+    else:
+        # Fallback: assume the full pixel height = ±2 mV (rough estimate)
+        img_height = trace.shape[0]
+        signal_mv = signal_px / (img_height / 4.0)
 
-    # Remove baseline drift
-    signal = _remove_baseline_drift(signal, fs=500, cutoff=0.5)
+    # ── Time axis calibration ─────────────────────────────────────────────
+    # Each pixel column = 1 / (px_per_mm_x * paper_speed) seconds
+    # → actual_fs = px_per_mm_x * paper_speed  (samples per second)
+    if px_per_mm_x is not None and px_per_mm_x > 0:
+        actual_fs = px_per_mm_x * paper_speed
+    else:
+        # Fallback: assume the image width covers 10 seconds
+        actual_fs = len(signal_mv) / 10.0
 
-    # Quality check
+    # Resample to TARGET_FS (500 Hz)
+    target_len = int(round(len(signal_mv) * TARGET_FS / actual_fs))
+    target_len = max(100, target_len)   # safety floor
+    signal_resampled = resample(signal_mv, target_len)
+
+    # Remove baseline drift (after resampling, fs is now TARGET_FS)
+    signal_out = _remove_baseline_drift(signal_resampled, fs=TARGET_FS, cutoff=0.5)
+
     quality = _compute_quality_score(trace)
 
     if debug:
@@ -195,16 +269,25 @@ def extract_signal_from_image(image_path, debug=False):
         axes[0, 0].imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         axes[0, 0].set_title("Original")
         axes[0, 1].imshow(grid_mask, cmap="gray")
-        axes[0, 1].set_title("Grid Mask")
+        axes[0, 1].set_title(f"Grid Mask (px/mm x={px_per_mm_x:.1f} y={px_per_mm_y:.1f})"
+                              if px_per_mm_x else "Grid Mask (calibration failed)")
         axes[1, 0].imshow(trace, cmap="gray")
         axes[1, 0].set_title("Cleaned Trace")
-        axes[1, 1].plot(signal, color="#CC0000", linewidth=0.7)
-        axes[1, 1].set_title(f"Extracted Signal (quality: {quality})")
+        axes[1, 1].plot(np.arange(len(signal_out)) / TARGET_FS, signal_out,
+                        color="#CC0000", linewidth=0.7)
+        axes[1, 1].set_xlabel("Time (s)")
+        axes[1, 1].set_ylabel("mV")
+        axes[1, 1].set_title(f"Calibrated Signal (quality: {quality:.2f})")
         axes[1, 1].grid(True, alpha=0.3)
         plt.tight_layout()
         plt.show()
 
-    return signal
+    return {
+        "signal":    signal_out,
+        "quality":   quality,
+        "actual_fs": actual_fs,
+        "px_per_mm": (px_per_mm_x, px_per_mm_y),
+    }
 
 
 def extract_multi_lead(image_path, n_leads=None):

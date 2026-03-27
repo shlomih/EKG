@@ -43,7 +43,9 @@ os.chdir(Path(__file__).parent)
 
 # Use all logical CPU threads for faster transformer inference
 import torch as _torch
-_torch.set_num_threads(16)
+# _torch.set_num_threads(16)
+_torch.set_num_threads(2)
+
 del _torch
 
 from cnn_classifier import (

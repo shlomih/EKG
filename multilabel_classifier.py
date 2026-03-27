@@ -503,6 +503,11 @@ def predict_multilabel(model, signal_12: np.ndarray, fs: int = 500,
     """
     from cnn_classifier import _load_raw_signal  # already imported above; just clarity
 
+    if signal_12 is None or not isinstance(signal_12, np.ndarray) or signal_12.ndim != 2:
+        raise ValueError(
+            f"signal_12 must be a 2D numpy array (12, N), got {type(signal_12)}"
+        )
+
     # Resample to 5000 if needed
     sig = signal_12.copy()
     if sig.shape[1] != SIGNAL_LEN:
@@ -525,7 +530,8 @@ def predict_multilabel(model, signal_12: np.ndarray, fs: int = 500,
     conditions.sort(key=lambda c: (-URGENCY.get(c, 0), -scores[c]))
 
     primary     = conditions[0] if conditions else MULTILABEL_CODES[int(np.argmax(probs))]
-    confidence  = float(probs[MULTILABEL_CODES.index(primary)])
+    primary_idx = CODE_TO_IDX.get(primary, int(np.argmax(probs)))
+    confidence  = float(probs[primary_idx])
 
     return {
         "primary":     primary,
@@ -563,7 +569,10 @@ def apply_patient_context(result: dict, patient_profile: dict) -> dict:
     pacemaker   = patient_profile.get("has_pacemaker", False)
     athlete     = patient_profile.get("is_athlete", False)
     pregnant    = patient_profile.get("is_pregnant", False)
-    k           = float(patient_profile.get("k_level", 4.0))
+    try:
+        k = float(patient_profile.get("k_level") or 4.0)
+    except (ValueError, TypeError):
+        k = 4.0
     pc          = result["per_class"]
 
     def _prepend_note(code, text):

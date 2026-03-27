@@ -183,35 +183,108 @@ def generate_pdf_report(patient_profile, classification=None, intervals=None,
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(2)
 
-        pred = classification.get("prediction", "N/A")
-        desc = classification.get("description", "")
-        conf = classification.get("confidence", 0)
+        # ── Multi-label format (12-condition model) ──────────────────────
+        if "conditions" in classification:
+            per_class  = classification.get("per_class", {})
+            conditions = classification.get("conditions", [])
+            primary    = classification.get("primary", "")
 
-        # Color-coded prediction box
-        colors = {
-            "NORM": (0, 196, 159), "MI": (255, 68, 68), "STTC": (255, 140, 0),
-            "HYP": (255, 165, 0), "CD": (255, 215, 0),
-        }
-        r, g, b = colors.get(pred, (136, 136, 136))
-        pdf.set_fill_color(r, g, b)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 10, f"  {pred} -- {desc}  (Confidence: {conf:.0%})",
-                 ln=True, fill=True, align="C")
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(2)
+            urgency_rgb = {3: (220, 50, 50), 2: (220, 120, 20), 1: (180, 160, 0), 0: (0, 180, 140)}
+            urgency_lbl = {3: "Critical", 2: "Abnormal", 1: "Mild", 0: "Normal"}
 
-        # Probability breakdown
-        probs = classification.get("probabilities", {})
-        if probs:
-            pdf.set_font("Helvetica", "", 8)
-            for cls, prob in sorted(probs.items(), key=lambda x: -x[1]):
-                bar_w = prob * 120
-                pdf.cell(15, 5, cls)
-                pdf.set_fill_color(100, 149, 237)
-                pdf.cell(bar_w, 5, "", fill=True)
-                pdf.cell(20, 5, f"  {prob:.0%}", ln=True)
-            pdf.set_fill_color(255, 255, 255)
+            if not conditions or conditions == ["NORM"]:
+                pdf.set_fill_color(0, 180, 140)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.cell(0, 10, "  Normal ECG -- No significant findings detected.",
+                         ln=True, fill=True, align="C")
+                pdf.set_text_color(0, 0, 0)
+            else:
+                n_critical = sum(1 for c in conditions if per_class.get(c, {}).get("urgency", 0) == 3)
+                n_abnormal = sum(1 for c in conditions if per_class.get(c, {}).get("urgency", 0) == 2)
+                n_mild     = sum(1 for c in conditions if per_class.get(c, {}).get("urgency", 0) == 1)
+                summary_parts = []
+                if n_critical: summary_parts.append(f"{n_critical} Critical")
+                if n_abnormal: summary_parts.append(f"{n_abnormal} Abnormal")
+                if n_mild:     summary_parts.append(f"{n_mild} Mild")
+                header_color = (220, 50, 50) if n_critical else ((220, 120, 20) if n_abnormal else (100, 149, 237))
+                pdf.set_fill_color(*header_color)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.cell(0, 10, f"  Findings: {', '.join(summary_parts)}",
+                         ln=True, fill=True, align="C")
+                pdf.set_text_color(0, 0, 0)
+                pdf.ln(2)
+
+                # Per-condition rows (detected conditions only, sorted by urgency)
+                display = [c for c in conditions if c != "NORM"]
+                if not display:
+                    display = conditions
+                col_w = [18, 52, 20, 98]
+                pdf.set_font("Helvetica", "B", 7)
+                pdf.set_fill_color(230, 230, 230)
+                for w, hdr in zip(col_w, ["Code", "Description", "Prob", "Clinical Action"]):
+                    pdf.cell(w, 5, hdr, border=1, fill=True, align="C")
+                pdf.ln()
+                pdf.set_font("Helvetica", "", 7)
+                for code in display:
+                    info  = per_class.get(code, {})
+                    urg   = info.get("urgency", 0)
+                    desc  = info.get("description", code)
+                    prob  = info.get("prob", 0)
+                    action = info.get("action", "")
+                    r, g, b = urgency_rgb.get(urg, (136, 136, 136))
+                    pdf.set_fill_color(r, g, b)
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.cell(col_w[0], 5, code, border=1, fill=True, align="C")
+                    pdf.set_fill_color(255, 255, 255)
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.cell(col_w[1], 5, desc[:30], border=1)
+                    pdf.cell(col_w[2], 5, f"{prob:.0%}", border=1, align="C")
+                    action_clean = action.encode("ascii", "ignore").decode()[:80]
+                    pdf.cell(col_w[3], 5, action_clean, border=1)
+                    pdf.ln()
+
+                # Clinical notes section
+                pdf.ln(2)
+                for code in display:
+                    info = per_class.get(code, {})
+                    note = info.get("note", "").encode("ascii", "ignore").decode().strip()
+                    if note:
+                        pdf.set_font("Helvetica", "B", 7)
+                        pdf.cell(18, 4, code, ln=False)
+                        pdf.set_font("Helvetica", "I", 7)
+                        pdf.cell(0, 4, note[:120], ln=True)
+
+        # ── Legacy 5-class format ────────────────────────────────────────
+        else:
+            pred = classification.get("prediction", "N/A")
+            desc = classification.get("description", "")
+            conf = classification.get("confidence", 0)
+
+            colors = {
+                "NORM": (0, 196, 159), "MI": (255, 68, 68), "STTC": (255, 140, 0),
+                "HYP": (255, 165, 0), "CD": (255, 215, 0),
+            }
+            r, g, b = colors.get(pred, (136, 136, 136))
+            pdf.set_fill_color(r, g, b)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 10, f"  {pred} -- {desc}  (Confidence: {conf:.0%})",
+                     ln=True, fill=True, align="C")
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(2)
+
+            probs = classification.get("probabilities", {})
+            if probs:
+                pdf.set_font("Helvetica", "", 8)
+                for cls, prob in sorted(probs.items(), key=lambda x: -x[1]):
+                    bar_w = prob * 120
+                    pdf.cell(15, 5, cls)
+                    pdf.set_fill_color(100, 149, 237)
+                    pdf.cell(bar_w, 5, "", fill=True)
+                    pdf.cell(20, 5, f"  {prob:.0%}", ln=True)
+                pdf.set_fill_color(255, 255, 255)
 
         pdf.ln(3)
 

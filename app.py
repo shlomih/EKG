@@ -440,6 +440,24 @@ with tab_scan:
         if uploaded:
             img_bytes = uploaded.getvalue()
 
+    # ── ECG paper calibration settings ──────────────────────────────
+    with st.expander("ECG paper settings", expanded=False):
+        _cal_cols = st.columns(2)
+        _paper_speed = _cal_cols[0].selectbox(
+            "Paper speed",
+            options=[25, 50],
+            index=0,
+            format_func=lambda x: f"{x} mm/s {'(standard)' if x == 25 else '(fast — EU/pediatric)'}",
+            help="25 mm/s is the global standard. 50 mm/s is used in some European countries and pediatric ECGs.",
+        )
+        _mm_per_mv = _cal_cols[1].selectbox(
+            "Voltage gain",
+            options=[5, 10, 20],
+            index=1,
+            format_func=lambda x: f"{x} mm/mV {'(standard)' if x == 10 else '(half standard)' if x == 5 else '(double — small complexes)'}",
+            help="10 mm/mV is standard. Use 5 mm/mV if complexes are clipped. Use 20 mm/mV if the signal looks too small.",
+        )
+
     if img_bytes is not None:
         img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
@@ -452,29 +470,52 @@ with tab_scan:
             y_end = 3 * h // 4
             mid = gray[y_start:y_end, :]
 
+            # Fallback: brightness-based extraction (pixel units, uncalibrated)
             raw_sig = (255 - np.mean(mid, axis=0)) / 100.0
             smoothed = np.convolve(raw_sig, np.ones(5) / 5, mode="same")
+            _calib_info = None
 
-            # Try the OpenCV digitization pipeline for higher fidelity
+            # Calibrated OpenCV digitization pipeline
             try:
                 from digitization_pipeline import extract_signal_from_image
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp.write(img_bytes)
                     tmp_path = tmp.name
-                smoothed = extract_signal_from_image(tmp_path)
+                _result = extract_signal_from_image(
+                    tmp_path,
+                    paper_speed=_paper_speed,
+                    mm_per_mv=_mm_per_mv,
+                )
                 os.unlink(tmp_path)
-                st.caption("Using OpenCV digitization pipeline")
+                smoothed   = _result["signal"]
+                _calib_info = _result
             except Exception:
                 pass  # fall back to brightness-based extraction
 
-            # Resample: the extracted signal has 1 sample per pixel column,
-            # but analysis expects real-time sampling at 500Hz.
-            # Standard EKG strip = 10 seconds at 25 mm/s.
-            # Resample pixel trace to 5000 samples (10s * 500Hz).
-            from scipy.signal import resample
-            target_samples = 500 * 10  # 10 seconds at 500Hz
-            smoothed = resample(smoothed, target_samples)
+            # Calibrated pipeline already resamples to 500 Hz.
+            # Fallback path still needs resampling (pixel units → 5000 samples).
+            if _calib_info is None:
+                from scipy.signal import resample as _resample
+                smoothed = _resample(smoothed, 500 * 10)
+
+            # Show calibration status
+            if _calib_info:
+                px_x, px_y = _calib_info["px_per_mm"]
+                if px_x and px_y:
+                    st.caption(
+                        f"Calibrated: {_paper_speed} mm/s, {_mm_per_mv} mm/mV — "
+                        f"grid detected ({px_x:.1f} px/mm horizontal, {px_y:.1f} px/mm vertical) — "
+                        f"quality {_calib_info['quality']:.0%}"
+                    )
+                else:
+                    st.caption(
+                        f"Signal extracted — grid not detected, using {_paper_speed} mm/s / "
+                        f"{_mm_per_mv} mm/mV settings with image-width calibration — "
+                        f"quality {_calib_info['quality']:.0%}"
+                    )
+            else:
+                st.caption("Using fallback brightness-based extraction (uncalibrated pixel units)")
 
             st.session_state.signal = smoothed
             st.session_state.fs = 500
@@ -581,15 +622,42 @@ if 'signal' in st.session_state:
         if _clf_type == "multilabel":
             urgency_colors = {3: "#FF4444", 2: "#FF8C00", 1: "#FFD700", 0: "#00C49F"}
             urgency_labels = {3: "Critical", 2: "Abnormal", 1: "Mild finding", 0: "Normal"}
-            conditions = result.get("conditions", [result["primary"]])
+            conditions = result.get("conditions", [result.get("primary", "NORM")])
             per_class  = result.get("per_class", {})
 
             if not conditions:
-                conditions = [result["primary"]]
+                conditions = [result.get("primary", "NORM")]
 
-            for code in conditions:
+            # ── Summary header ──────────────────────────────────────────────
+            from multilabel_classifier import URGENCY as _URGENCY
+            _n_critical = sum(1 for c in conditions if _URGENCY.get(c, 0) == 3)
+            _n_abnormal = sum(1 for c in conditions if _URGENCY.get(c, 0) == 2)
+            _n_mild     = sum(1 for c in conditions if _URGENCY.get(c, 0) == 1)
+            _norm_only  = all(_URGENCY.get(c, 0) == 0 for c in conditions)
+
+            if _norm_only:
+                st.success("**Normal ECG** — No significant findings detected.")
+            else:
+                _parts = []
+                if _n_critical: _parts.append(f"**{_n_critical} critical**")
+                if _n_abnormal: _parts.append(f"**{_n_abnormal} abnormal**")
+                if _n_mild:     _parts.append(f"{_n_mild} mild")
+                _summary_msg = "Findings: " + ", ".join(_parts)
+                if _n_critical:
+                    st.error(_summary_msg)
+                elif _n_abnormal:
+                    st.warning(_summary_msg)
+                else:
+                    st.info(_summary_msg)
+
+            # Skip NORM card when other findings are also present (avoids noise)
+            _display_conditions = (
+                [c for c in conditions if c != "NORM"] if len(conditions) > 1 else conditions
+            )
+
+            for code in _display_conditions:
                 info    = per_class.get(code, {})
-                prob    = info.get("prob", result["confidence"])
+                prob    = info.get("prob", result.get("confidence", 0))
                 urg     = info.get("urgency", 0)
                 desc    = info.get("description", code)
                 action  = info.get("action", "")

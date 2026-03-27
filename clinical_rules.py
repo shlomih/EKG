@@ -257,6 +257,37 @@ def _check_r_wave_progression(signals_12, lead_names):
     return None
 
 
+def _check_rvh(signals_12, lead_names, axis):
+    """
+    RVH screening: dominant R in V1 (R amplitude > S amplitude) + right axis deviation.
+    Both criteria together give high specificity for right ventricular hypertrophy.
+    """
+    if axis is None or axis <= 90:
+        return None   # Need right axis deviation (>90 deg)
+
+    name_to_idx = {name.upper(): i for i, name in enumerate(lead_names)}
+    v1_idx = name_to_idx.get("V1")
+    if v1_idx is None:
+        return None
+
+    sig = signals_12[:, v1_idx] - np.mean(signals_12[:, v1_idx])
+    r_amp = float(np.max(sig))
+    s_amp = float(abs(np.min(sig)))
+
+    if r_amp > s_amp:
+        return {
+            "severity": "WARNING",
+            "code": "RVH",
+            "finding": f"Right ventricular hypertrophy pattern (dominant R in V1, axis {axis:.0f} deg)",
+            "explanation": (
+                "Dominant R wave in V1 with right axis deviation suggests RVH. "
+                "Common causes: pulmonary hypertension, chronic PE, COPD, congenital heart disease. "
+                "Echo recommended to assess RV size and pressure."
+            ),
+        }
+    return None
+
+
 def analyze_clinical_rules(signals_12, fs, lead_names, patient_profile=None):
     """
     Run all clinical rules on 12-lead ECG.
@@ -351,6 +382,80 @@ def analyze_clinical_rules(signals_12, fs, lead_names, patient_profile=None):
     r_finding = _check_r_wave_progression(signals_12, lead_names)
     if r_finding:
         findings.append(r_finding)
+
+    # 5. RVH screening (dominant R in V1 + right axis)
+    rvh_finding = _check_rvh(signals_12, lead_names, axis)
+    if rvh_finding:
+        findings.append(rvh_finding)
+
+    # 6. Posterior STEMI screen (dominant R + ST depression in V1-V3)
+    name_to_idx = {name.upper(): i for i, name in enumerate(lead_names)}
+    posterior_leads = [l for l in ("V1", "V2", "V3") if l in name_to_idx]
+    if len(posterior_leads) >= 2:
+        dom_r_leads, std_dep_leads = [], []
+        for lead in posterior_leads:
+            sig = signals_12[:, name_to_idx[lead]] - np.mean(signals_12[:, name_to_idx[lead]])
+            r_amp = float(np.max(sig))
+            s_amp = float(abs(np.min(sig)))
+            if r_amp > s_amp and r_amp > 0.5:
+                dom_r_leads.append(lead)
+            baseline = np.percentile(sig, 10)
+            if baseline < -0.05:
+                std_dep_leads.append(lead)
+        if len(dom_r_leads) >= 2 and len(std_dep_leads) >= 2:
+            findings.append({
+                "severity": "WARNING",
+                "code": "POSTERIOR_STEMI_SCREEN",
+                "finding": f"Posterior STEMI pattern in {', '.join(posterior_leads)}",
+                "explanation": (
+                    "Dominant R wave with ST depression in V1-V3 may represent posterior STEMI. "
+                    "Consider posterior leads (V7-V9). If clinical suspicion: activate cath lab."
+                ),
+            })
+
+    # 7. Hyperacute T-wave screen (de Winter / early STEMI equivalent)
+    hyperacute_leads = []
+    for lead in ("V2", "V3", "V4"):
+        idx = name_to_idx.get(lead)
+        if idx is None:
+            continue
+        sig = signals_12[:, idx]
+        sig_c = sig - np.mean(sig)
+        # Upsloping ST depression + tall peaked T = de Winter pattern
+        st_level = float(np.percentile(sig_c, 15))   # proximal baseline
+        t_peak   = float(np.max(sig_c[len(sig_c) // 2:]))
+        r_amp    = float(np.max(sig_c[:len(sig_c) // 2]))
+        if st_level < -0.05 and t_peak > 0.4 * r_amp and t_peak > 0.4:
+            hyperacute_leads.append(lead)
+    if len(hyperacute_leads) >= 2:
+        findings.append({
+            "severity": "CRITICAL",
+            "code": "HYPERACUTE_T",
+            "finding": f"Hyperacute T-waves in {', '.join(hyperacute_leads)} (de Winter pattern)",
+            "explanation": (
+                "Upsloping ST depression with tall peaked T-waves in precordial leads — "
+                "de Winter pattern is a STEMI equivalent indicating LAD occlusion. "
+                "Treat as STEMI: activate cath lab immediately."
+            ),
+        })
+
+    # 8. Right atrial enlargement (RAE): peaked P > 2.5 mV in lead II
+    ii_idx = name_to_idx.get("II")
+    if ii_idx is not None:
+        sig_ii = signals_12[:, ii_idx]
+        sig_ii_c = sig_ii - np.mean(sig_ii)
+        # Estimate P-wave region: first 20% of median RR interval before each R-peak
+        p_peak_amp = float(np.percentile(sig_ii_c, 97))   # rough upper tail
+        if p_peak_amp > 0.25:   # > 0.25 mV (2.5 mm at standard gain)
+            findings.append({
+                "severity": "INFO",
+                "code": "RAE",
+                "finding": f"Right atrial enlargement pattern (P amplitude {p_peak_amp:.2f} mV in II)",
+                "explanation": (
+                    "Peaked P wave > 2.5 mm in lead II suggests right atrial enlargement. "
+                    "Common causes: pulmonary hypertension, COPD, tricuspid stenosis, congenital disease."
+                ),
+            })
 
     # Build summary
     if not findings:

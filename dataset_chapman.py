@@ -69,7 +69,6 @@ SNOMED_TO_LABEL = {
     "164931005": "LVH",    # Left ventricular hypertrophy
     "67751000119106": "LVH",  # LVH (alt code)
     "427084000": "STACH",  # Sinus tachycardia  ← new label (rich in Chapman)
-    "164934002": "LAFB",   # Left anterior fascicular block
 }
 
 # Our 13-label set for the merged model (adds AFIB + STACH to the 12-class PTB-XL set)
