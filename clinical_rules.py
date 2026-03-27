@@ -257,6 +257,28 @@ def _check_r_wave_progression(signals_12, lead_names):
     return None
 
 
+def _find_r_peaks(sig, fs):
+    """
+    Detect R-peak sample indices in a 1-D ECG signal.
+
+    Uses a simple threshold (2× std) with a minimum refractory period of 500 ms
+    to avoid double-counting.  Returns an empty list if the signal is too flat.
+    """
+    sig_c = sig - np.mean(sig)
+    std_val = np.std(sig_c)
+    if std_val < 1e-6:
+        return []
+    above = np.where(sig_c > 2.0 * std_val)[0]
+    if len(above) == 0:
+        return []
+    min_gap = fs // 2           # minimum 500 ms between beats
+    peaks = [above[0]]
+    for i in range(1, len(above)):
+        if above[i] - peaks[-1] > min_gap:
+            peaks.append(above[i])
+    return peaks
+
+
 def _check_rvh(signals_12, lead_names, axis):
     """
     RVH screening: dominant R in V1 (R amplitude > S amplitude) + right axis deviation.
@@ -283,6 +305,180 @@ def _check_rvh(signals_12, lead_names, axis):
                 "Dominant R wave in V1 with right axis deviation suggests RVH. "
                 "Common causes: pulmonary hypertension, chronic PE, COPD, congenital heart disease. "
                 "Echo recommended to assess RV size and pressure."
+            ),
+        }
+    return None
+
+
+def _check_posterior_stemi(signals_12, fs, lead_names):
+    """
+    Posterior STEMI screen: looks for dominant R wave (R > S) combined with
+    beat-relative ST depression ≥ 1 mm (0.1 mV) in at least 2 of V1, V2, V3.
+
+    ST depression is measured at J+60–100 ms relative to the PR segment
+    (100–40 ms before R-peak) to avoid bias from baseline drift.
+    """
+    name_to_idx = {n.upper(): i for i, n in enumerate(lead_names)}
+    dom_r_leads, st_dep_leads = [], []
+
+    # Time offsets (in samples at fs Hz)
+    pr_s_off = int(0.10 * fs)   # 100 ms before R — start of PR baseline window
+    pr_e_off = int(0.04 * fs)   # 40 ms before R  — end of PR baseline window
+    st_s_off = int(0.06 * fs)   # 60 ms after R   — start of ST segment window
+    st_e_off = int(0.10 * fs)   # 100 ms after R  — end of ST segment window
+
+    for lead in ("V1", "V2", "V3"):
+        idx = name_to_idx.get(lead)
+        if idx is None:
+            continue
+        sig = signals_12[:, idx].astype(float)
+        sig_c = sig - np.mean(sig)
+
+        # Dominant R: R amplitude > S amplitude, R > 0.3 mV
+        r_amp = float(np.max(sig_c))
+        s_amp = float(abs(np.min(sig_c)))
+        if r_amp > s_amp and r_amp > 0.3:
+            dom_r_leads.append(lead)
+
+        # Beat-relative ST depression
+        peaks = _find_r_peaks(sig, fs)
+        if not peaks:
+            continue
+        depressions = []
+        for p in peaks:
+            if p - pr_s_off < 0 or p + st_e_off >= len(sig):
+                continue
+            baseline = float(np.mean(sig[p - pr_s_off : p - pr_e_off]))
+            st_level = float(np.mean(sig[p + st_s_off : p + st_e_off]))
+            depressions.append(baseline - st_level)   # positive = depression
+
+        if depressions and float(np.median(depressions)) >= 0.1:
+            st_dep_leads.append(lead)
+
+    if len(dom_r_leads) >= 2 and len(st_dep_leads) >= 2:
+        affected = [l for l in dom_r_leads if l in st_dep_leads] or dom_r_leads[:2]
+        return {
+            "severity": "WARNING",
+            "code": "POSTERIOR_STEMI_SCREEN",
+            "finding": f"Posterior STEMI pattern in {', '.join(affected)}",
+            "explanation": (
+                "Dominant R wave with ST depression ≥ 1 mm in V1–V3 may represent posterior STEMI. "
+                "Apply posterior leads (V7–V9). If clinical suspicion: activate cath lab."
+            ),
+        }
+    return None
+
+
+def _check_hyperacute_t(signals_12, fs, lead_names):
+    """
+    de Winter pattern / hyperacute T screen in V2–V4.
+
+    Per-beat criteria (median across beats):
+      - ST depression ≥ 0.1 mV at J+60–100 ms (upsloping ST depression)
+      - T-wave amplitude ≥ 0.4 mV AND ≥ 0.4 × R amplitude
+
+    Requires ≥ 2 of V2, V3, V4 to meet criteria.
+    """
+    name_to_idx = {n.upper(): i for i, n in enumerate(lead_names)}
+
+    pr_s_off = int(0.10 * fs)
+    pr_e_off = int(0.04 * fs)
+    st_s_off = int(0.06 * fs)
+    st_e_off = int(0.10 * fs)
+    t_s_off  = int(0.15 * fs)
+    t_e_off  = int(0.35 * fs)
+
+    hyperacute_leads = []
+    for lead in ("V2", "V3", "V4"):
+        idx = name_to_idx.get(lead)
+        if idx is None:
+            continue
+        sig = signals_12[:, idx].astype(float)
+
+        peaks = _find_r_peaks(sig, fs)
+        if not peaks:
+            continue
+
+        st_deps, t_amps, r_amps = [], [], []
+        for p in peaks:
+            if p - pr_s_off < 0 or p + t_e_off >= len(sig):
+                continue
+            baseline = float(np.mean(sig[p - pr_s_off : p - pr_e_off]))
+            st_level = float(np.mean(sig[p + st_s_off : p + st_e_off]))
+            t_peak   = float(np.max(sig[p + t_s_off  : p + t_e_off])) - baseline
+            r_amp    = float(sig[p]) - baseline
+            st_deps.append(baseline - st_level)
+            t_amps.append(t_peak)
+            r_amps.append(r_amp)
+
+        if not st_deps:
+            continue
+
+        med_st = float(np.median(st_deps))
+        med_t  = float(np.median(t_amps))
+        med_r  = float(np.median(r_amps)) if r_amps else 1.0
+        t_ratio = med_t / med_r if med_r > 0.05 else 0.0
+
+        if med_st >= 0.1 and med_t >= 0.4 and t_ratio >= 0.4:
+            hyperacute_leads.append(lead)
+
+    if len(hyperacute_leads) >= 2:
+        return {
+            "severity": "CRITICAL",
+            "code": "HYPERACUTE_T",
+            "finding": f"Hyperacute T-waves in {', '.join(hyperacute_leads)} (de Winter pattern)",
+            "explanation": (
+                "Upsloping ST depression with tall peaked T-waves — "
+                "de Winter pattern is a STEMI equivalent indicating LAD occlusion. "
+                "Treat as STEMI: activate cath lab immediately."
+            ),
+        }
+    return None
+
+
+def _check_rae(signals_12, fs, lead_names):
+    """
+    Right atrial enlargement: P-wave amplitude > 2.5 mm (0.25 mV) in lead II.
+
+    P-wave is measured in the 200–60 ms window before each R-peak relative
+    to the PR segment baseline (50–20 ms before R-peak, which is isoelectric).
+    Returns None if lead II is absent or fewer than 2 beats are detected.
+    """
+    name_to_idx = {n.upper(): i for i, n in enumerate(lead_names)}
+    ii_idx = name_to_idx.get("II")
+    if ii_idx is None:
+        return None
+
+    sig = signals_12[:, ii_idx].astype(float)
+    peaks = _find_r_peaks(sig, fs)
+    if len(peaks) < 2:
+        return None
+
+    p_s_off  = int(0.20 * fs)   # 200 ms before R — start of P-wave window
+    p_e_off  = int(0.06 * fs)   # 60 ms before R  — end of P-wave window
+    pr_s_off = int(0.05 * fs)   # 50 ms before R  — start of PR baseline
+    pr_e_off = int(0.02 * fs)   # 20 ms before R  — end of PR baseline
+
+    p_amps = []
+    for p in peaks:
+        if p - p_s_off < 0:
+            continue
+        baseline = float(np.mean(sig[p - pr_s_off : p - pr_e_off]))
+        p_peak   = float(np.max(sig[p - p_s_off   : p - p_e_off]))
+        p_amps.append(p_peak - baseline)
+
+    if not p_amps:
+        return None
+
+    med_p = float(np.median(p_amps))
+    if med_p > 0.25:
+        return {
+            "severity": "INFO",
+            "code": "RAE",
+            "finding": f"Right atrial enlargement pattern (P amplitude {med_p:.2f} mV in II)",
+            "explanation": (
+                "Peaked P wave > 2.5 mm in lead II suggests right atrial enlargement. "
+                "Common causes: pulmonary hypertension, COPD, tricuspid stenosis, congenital disease."
             ),
         }
     return None
@@ -388,74 +584,20 @@ def analyze_clinical_rules(signals_12, fs, lead_names, patient_profile=None):
     if rvh_finding:
         findings.append(rvh_finding)
 
-    # 6. Posterior STEMI screen (dominant R + ST depression in V1-V3)
-    name_to_idx = {name.upper(): i for i, name in enumerate(lead_names)}
-    posterior_leads = [l for l in ("V1", "V2", "V3") if l in name_to_idx]
-    if len(posterior_leads) >= 2:
-        dom_r_leads, std_dep_leads = [], []
-        for lead in posterior_leads:
-            sig = signals_12[:, name_to_idx[lead]] - np.mean(signals_12[:, name_to_idx[lead]])
-            r_amp = float(np.max(sig))
-            s_amp = float(abs(np.min(sig)))
-            if r_amp > s_amp and r_amp > 0.5:
-                dom_r_leads.append(lead)
-            baseline = np.percentile(sig, 10)
-            if baseline < -0.05:
-                std_dep_leads.append(lead)
-        if len(dom_r_leads) >= 2 and len(std_dep_leads) >= 2:
-            findings.append({
-                "severity": "WARNING",
-                "code": "POSTERIOR_STEMI_SCREEN",
-                "finding": f"Posterior STEMI pattern in {', '.join(posterior_leads)}",
-                "explanation": (
-                    "Dominant R wave with ST depression in V1-V3 may represent posterior STEMI. "
-                    "Consider posterior leads (V7-V9). If clinical suspicion: activate cath lab."
-                ),
-            })
+    # 6. Posterior STEMI screen (dominant R + beat-relative ST depression ≥ 1 mm in V1–V3)
+    post_finding = _check_posterior_stemi(signals_12, fs, lead_names)
+    if post_finding:
+        findings.append(post_finding)
 
     # 7. Hyperacute T-wave screen (de Winter / early STEMI equivalent)
-    hyperacute_leads = []
-    for lead in ("V2", "V3", "V4"):
-        idx = name_to_idx.get(lead)
-        if idx is None:
-            continue
-        sig = signals_12[:, idx]
-        sig_c = sig - np.mean(sig)
-        # Upsloping ST depression + tall peaked T = de Winter pattern
-        st_level = float(np.percentile(sig_c, 15))   # proximal baseline
-        t_peak   = float(np.max(sig_c[len(sig_c) // 2:]))
-        r_amp    = float(np.max(sig_c[:len(sig_c) // 2]))
-        if st_level < -0.05 and t_peak > 0.4 * r_amp and t_peak > 0.4:
-            hyperacute_leads.append(lead)
-    if len(hyperacute_leads) >= 2:
-        findings.append({
-            "severity": "CRITICAL",
-            "code": "HYPERACUTE_T",
-            "finding": f"Hyperacute T-waves in {', '.join(hyperacute_leads)} (de Winter pattern)",
-            "explanation": (
-                "Upsloping ST depression with tall peaked T-waves in precordial leads — "
-                "de Winter pattern is a STEMI equivalent indicating LAD occlusion. "
-                "Treat as STEMI: activate cath lab immediately."
-            ),
-        })
+    hyperacute_finding = _check_hyperacute_t(signals_12, fs, lead_names)
+    if hyperacute_finding:
+        findings.append(hyperacute_finding)
 
-    # 8. Right atrial enlargement (RAE): peaked P > 2.5 mV in lead II
-    ii_idx = name_to_idx.get("II")
-    if ii_idx is not None:
-        sig_ii = signals_12[:, ii_idx]
-        sig_ii_c = sig_ii - np.mean(sig_ii)
-        # Estimate P-wave region: first 20% of median RR interval before each R-peak
-        p_peak_amp = float(np.percentile(sig_ii_c, 97))   # rough upper tail
-        if p_peak_amp > 0.25:   # > 0.25 mV (2.5 mm at standard gain)
-            findings.append({
-                "severity": "INFO",
-                "code": "RAE",
-                "finding": f"Right atrial enlargement pattern (P amplitude {p_peak_amp:.2f} mV in II)",
-                "explanation": (
-                    "Peaked P wave > 2.5 mm in lead II suggests right atrial enlargement. "
-                    "Common causes: pulmonary hypertension, COPD, tricuspid stenosis, congenital disease."
-                ),
-            })
+    # 8. Right atrial enlargement (RAE): peaked P > 2.5 mm in lead II
+    rae_finding = _check_rae(signals_12, fs, lead_names)
+    if rae_finding:
+        findings.append(rae_finding)
 
     # Build summary
     if not findings:
