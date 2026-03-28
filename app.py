@@ -7,6 +7,17 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+# ── i18n ─────────────────────────────────────────────────────────────────────
+try:
+    from translations import t, language_selector
+    I18N_AVAILABLE = True
+except ImportError:
+    I18N_AVAILABLE = False
+    def t(key, **kwargs):  # noqa: E302
+        return key
+    def language_selector():  # noqa: E302
+        pass
+
 # --- DATABASE ---
 try:
     from database_setup import (
@@ -120,7 +131,7 @@ except ImportError:
     CLINICAL_RULES_AVAILABLE = False
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="EKG Intel POC", layout="wide")
+st.set_page_config(page_title=t("page_title"), layout="wide")
 
 # --- UI STYLING (Hiding Sidebar, Tab Styling) ---
 st.markdown("""
@@ -139,38 +150,44 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# MAIN PAGE: Patient Profile (Always Visible)
-# Restored logic from your original sidebar
+# LANGUAGE SELECTOR (top-right compact row)
 # ─────────────────────────────────────────────────────────────
-st.title("🩺 EKG Intelligence")
+_lang_spacer, _lang_col = st.columns([8, 1])
+with _lang_col:
+    language_selector()
 
-st.header("Patient Profile")
-st.caption("Context changes interpretation — not just display labels.")
+# ─────────────────────────────────────────────────────────────
+# MAIN PAGE: Patient Profile (Always Visible)
+# ─────────────────────────────────────────────────────────────
+st.title(t("app_title"))
+
+st.header(t("patient_profile_header"))
+st.caption(t("patient_profile_caption"))
 
 # Patient identity row
 col_id1, col_id2, col_id3 = st.columns([2, 2, 2])
-first_name = col_id1.text_input("First Name", value="", placeholder="e.g. John")
-last_name = col_id2.text_input("Last Name", value="", placeholder="e.g. Doe")
-id_number = col_id3.text_input("Patient ID", value="", placeholder="e.g. 123456789")
+first_name = col_id1.text_input(t("first_name_label"), value="", placeholder=t("first_name_placeholder"))
+last_name = col_id2.text_input(t("last_name_label"), value="", placeholder=t("last_name_placeholder"))
+id_number = col_id3.text_input(t("patient_id_label"), value="", placeholder=t("patient_id_placeholder"))
 
 # Clinical parameters row
 col_a1, col_a2, col_a3 = st.columns(3)
 
-age = col_a1.number_input("Age", min_value=1, max_value=120, value=55)
-sex = col_a2.selectbox("Biological Sex", ["M", "F"])
+age = col_a1.number_input(t("age_label"), min_value=1, max_value=120, value=55)
+sex = col_a2.selectbox(t("sex_label"), ["M", "F"])
 k_level = col_a3.slider(
-    "Potassium K⁺ (mmol/L)",
+    t("potassium_label"),
     2.0, 7.0, 4.0, step=0.1,
-    help="Normal: 3.5–5.0 mmol/L"
+    help=t("potassium_help")
 )
 
-st.markdown("**Logic Inverters**")
+st.markdown(t("logic_inverters"))
 col_b1, col_b2, col_b3 = st.columns(3)
 
-pacemaker = col_b1.toggle("Pacemaker / ICD Present", value=False)
-athlete = col_b2.toggle("Athlete Status", value=False)
+pacemaker = col_b1.toggle(t("pacemaker_label"), value=False)
+athlete = col_b2.toggle(t("athlete_label"), value=False)
 pregnant = col_b3.toggle(
-    "Pregnancy",
+    t("pregnancy_label"),
     value=False,
     disabled=(sex == "M")
 )
@@ -192,13 +209,13 @@ patient_profile = {
 if DB_AVAILABLE:
     col_save, col_load = st.columns(2)
     with col_save:
-        if st.button("Save Patient", disabled=not (first_name and last_name)):
+        if st.button(t("save_patient_btn"), disabled=not (first_name and last_name)):
             pid = save_patient(
                 first_name, last_name, id_number, age, sex,
                 pacemaker, athlete, pregnant and sex == "F", k_level,
             )
             st.session_state["current_patient_id"] = pid
-            st.success(f"Saved: {first_name} {last_name} (ID: {pid})")
+            st.success(t("saved_msg", name=f"{first_name} {last_name}", pid=pid))
     with col_load:
         patients = list_patients()
         if patients:
@@ -206,14 +223,14 @@ if DB_AVAILABLE:
                 f"{p['first_name']} {p['last_name']} ({p['id_number'] or p['patient_id']})": p
                 for p in patients
             }
-            selected = st.selectbox("Load existing patient", [""] + list(options.keys()))
+            selected = st.selectbox(t("load_patient_label"), [""] + list(options.keys()))
             if selected and selected in options:
                 p = options[selected]
                 st.session_state["current_patient_id"] = p["patient_id"]
-                st.caption(
-                    f"Loaded: {p['first_name']} {p['last_name']} | "
-                    f"Age: {p['age']} | Sex: {p['sex']}"
-                )
+                st.caption(t("loaded_msg",
+                    first=p['first_name'], last=p['last_name'],
+                    age=p['age'], sex=p['sex'],
+                ))
 
 st.markdown("---")
 
@@ -374,25 +391,25 @@ def analyze_st_segment(signal, fs=500):
 
 def run_full_analysis(signal, fs, p):
     if not INTERVAL_ENGINE_AVAILABLE:
-        st.warning("Clinical Engine not found.")
+        st.warning(t("clinical_engine_missing"))
         return
 
     if signal is None or len(signal) < 100:
-        st.error("Signal is too short for analysis. Please select a longer trace.")
+        st.error(t("signal_too_short_analysis"))
         return
 
     try:
         intervals = calculate_intervals(signal, fs)
     except Exception as e:
-        st.error(f"Analysis failure: unexpected error while calculating intervals: {str(e)}")
+        st.error(t("analysis_failure_error", error=str(e)))
         return
 
     if not isinstance(intervals, dict):
-        st.error("Analysis failure: interval calculator returned invalid results.")
+        st.error(t("analysis_invalid_error"))
         return
 
     if intervals.get("error"):
-        st.error(f"Analysis Error: {intervals['error']}")
+        st.error(t("analysis_error", error=intervals['error']))
         return
 
     context = apply_clinical_context(intervals, p)
@@ -408,60 +425,69 @@ def run_full_analysis(signal, fs, p):
         except Exception:
             return str(val)
 
-    cols[0].metric("Heart Rate", f"{fmt('hr')} bpm")
-    cols[1].metric("PR Interval", f"{fmt('pr')} ms")
-    cols[2].metric("QRS Duration", f"{fmt('qrs')} ms")
-    cols[3].metric("QTc (Bazett)", f"{fmt('qtc')} ms")
+    cols[0].metric(t("heart_rate_metric"), t("heart_rate_unit", val=fmt('hr')))
+    cols[1].metric(t("pr_interval_metric"), t("interval_unit", val=fmt('pr')))
+    cols[2].metric(t("qrs_duration_metric"), t("interval_unit", val=fmt('qrs')))
+    cols[3].metric(t("qtc_metric"), t("interval_unit", val=fmt('qtc')))
 
     if context.get("flags"):
-        with st.expander("📝 Clinical Findings", expanded=True):
+        with st.expander(t("clinical_findings"), expanded=True):
             for flag in context["flags"]:
                 st.write(flag)
 
 # ─────────────────────────────────────────────────────────────
 # INPUT TABS
 # ─────────────────────────────────────────────────────────────
-tab_scan, tab_data = st.tabs(["📸 Mobile Scan", "📂 Dataset Explorer"])
+tab_scan, tab_data = st.tabs([t("tab_scan"), t("tab_data")])
 
 with tab_scan:
-    scan_mode = st.radio("Input method", ["Camera", "Upload image"], horizontal=True)
+    _camera_opt = t("camera_option")
+    _upload_opt = t("upload_option")
+    scan_mode = st.radio(t("input_method_label"), [_camera_opt, _upload_opt], horizontal=True)
 
     img_bytes = None
 
-    if scan_mode == "Camera":
-        cam_buf = st.camera_input("Scanner")
+    if scan_mode == _camera_opt:
+        cam_buf = st.camera_input(t("scanner_label"))
         if cam_buf:
             img_bytes = cam_buf.getvalue()
     else:
         uploaded = st.file_uploader(
-            "Upload an EKG strip image",
+            t("upload_label"),
             type=["png", "jpg", "jpeg", "bmp", "tiff"],
         )
         if uploaded:
             img_bytes = uploaded.getvalue()
 
     # ── ECG paper calibration settings ──────────────────────────────
-    with st.expander("ECG paper settings", expanded=False):
+    with st.expander(t("ecg_paper_settings"), expanded=False):
         _cal_cols = st.columns(2)
         _paper_speed = _cal_cols[0].selectbox(
-            "Paper speed",
+            t("paper_speed_label"),
             options=[25, 50],
             index=0,
-            format_func=lambda x: f"{x} mm/s {'(standard)' if x == 25 else '(fast — EU/pediatric)'}",
-            help="25 mm/s is the global standard. 50 mm/s is used in some European countries and pediatric ECGs.",
+            format_func=lambda x: (
+                t("paper_speed_standard", x=x) if x == 25
+                else t("paper_speed_fast", x=x)
+            ),
+            help=t("paper_speed_help"),
         )
         _mm_per_mv = _cal_cols[1].selectbox(
-            "Voltage gain",
+            t("voltage_gain_label"),
             options=[5, 10, 20],
             index=1,
-            format_func=lambda x: f"{x} mm/mV {'(standard)' if x == 10 else '(half standard)' if x == 5 else '(double — small complexes)'}",
-            help="10 mm/mV is standard. Use 5 mm/mV if complexes are clipped. Use 20 mm/mV if the signal looks too small.",
+            format_func=lambda x: (
+                t("voltage_standard", x=x) if x == 10
+                else t("voltage_half", x=x) if x == 5
+                else t("voltage_double", x=x)
+            ),
+            help=t("voltage_gain_help"),
         )
 
     if img_bytes is not None:
         img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
-            st.error("Could not decode image.")
+            st.error(t("cannot_decode_image"))
         else:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -503,53 +529,49 @@ with tab_scan:
             if _calib_info:
                 px_x, px_y = _calib_info["px_per_mm"]
                 if px_x and px_y:
-                    st.caption(
-                        f"Calibrated: {_paper_speed} mm/s, {_mm_per_mv} mm/mV — "
-                        f"grid detected ({px_x:.1f} px/mm horizontal, {px_y:.1f} px/mm vertical) — "
-                        f"quality {_calib_info['quality']:.0%}"
-                    )
+                    st.caption(t("calib_detected",
+                        speed=_paper_speed, gain=_mm_per_mv,
+                        px_x=px_x, px_y=px_y,
+                        quality=_calib_info['quality'],
+                    ))
                 else:
-                    st.caption(
-                        f"Signal extracted — grid not detected, using {_paper_speed} mm/s / "
-                        f"{_mm_per_mv} mm/mV settings with image-width calibration — "
-                        f"quality {_calib_info['quality']:.0%}"
-                    )
+                    st.caption(t("calib_no_grid",
+                        speed=_paper_speed, gain=_mm_per_mv,
+                        quality=_calib_info['quality'],
+                    ))
             else:
-                st.caption("Using fallback brightness-based extraction (uncalibrated pixel units)")
+                st.caption(t("calib_fallback"))
 
             st.session_state.signal = smoothed
             st.session_state.fs = 500
 
-            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="Input image", width='stretch')
+            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=t("input_image_caption"), width='stretch')
 
             sig_duration = len(smoothed) / 500
             if sig_duration < 3:
-                st.warning(
-                    f"Extracted signal is only {sig_duration:.1f}s ({len(smoothed)} samples). "
-                    "Use a wider image or landscape orientation for best results."
-                )
+                st.warning(t("signal_too_short_scan", dur=sig_duration, n=len(smoothed)))
 
 with tab_data:
     if 'current_path' not in st.session_state:
         st.session_state.current_path = "C:/Users/osnat/Documents/Shlomi/EKG/ekg_datasets/ptbxl/records500/00000"
-    
-    path_in = st.text_input("Folder:", st.session_state.current_path)
+
+    path_in = st.text_input(t("folder_label"), st.session_state.current_path)
     clean_p = path_in.replace('"', '').strip()
-    
+
     if os.path.exists(clean_p):
         files = [f.replace('.dat', '') for f in os.listdir(clean_p) if f.endswith('.dat')]
         if files:
-            sel = st.selectbox("Record", sorted(files))
-            if st.button("Analyze Record"):
+            sel = st.selectbox(t("record_label"), sorted(files))
+            if st.button(t("analyze_record_btn")):
                 try:
                     rec = wfdb.rdrecord(os.path.join(clean_p, sel))
                 except Exception as e:
-                    st.error(f"Could not load record: {e}")
+                    st.error(t("load_record_error", error=e))
                     st.stop()
 
                 raw_signal = getattr(rec, "p_signal", None)
                 if raw_signal is None:
-                    st.error("Record does not contain signal data (p_signal missing).")
+                    st.error(t("no_signal_error"))
                     st.stop()
 
                 lead_names = getattr(rec, "sig_name", [])
@@ -567,7 +589,7 @@ with tab_data:
                         signal = raw_signal[:, 0]
 
                 if len(signal) < 100:
-                    st.error("Selected record is too short for analysis.")
+                    st.error(t("record_too_short_error"))
                     st.stop()
 
                 st.session_state.signal = signal
@@ -589,7 +611,7 @@ if 'signal' in st.session_state:
 
     # ── 12-Lead Display (when available) ──
     if "signals_12" in st.session_state and "lead_names" in st.session_state:
-        st.markdown("#### 12-Lead ECG")
+        st.markdown(t("twelve_lead_header"))
         render_12_lead(
             st.session_state.signals_12,
             st.session_state.fs,
@@ -599,13 +621,13 @@ if 'signal' in st.session_state:
     # ── AI Classification (when 12-lead data available) ──
     if CLASSIFIER_AVAILABLE and "signals_12" in st.session_state:
         model_label = (
-            "Multi-Label CNN (12 conditions)" if _clf_type == "multilabel"
-            else "Ensemble CNN" if _clf_type == "ensemble"
-            else "Hybrid CNN" if (HYBRID_AVAILABLE and _clf_type == "cnn")
-            else "1D CNN" if _clf_type == "cnn"
-            else "GradientBoosting"
+            t("model_multilabel") if _clf_type == "multilabel"
+            else t("model_ensemble") if _clf_type == "ensemble"
+            else t("model_hybrid") if (HYBRID_AVAILABLE and _clf_type == "cnn")
+            else t("model_cnn") if _clf_type == "cnn"
+            else t("model_sklearn")
         )
-        st.markdown(f"#### AI Diagnosis ({model_label})")
+        st.markdown(t("ai_diagnosis_header", model=model_label))
         result = classify_ecg(
             _clf_model, st.session_state.signals_12, st.session_state.fs,
             lead_names=st.session_state.get("lead_names"),
@@ -621,7 +643,12 @@ if 'signal' in st.session_state:
         # ── Multi-label display ──
         if _clf_type == "multilabel":
             urgency_colors = {3: "#FF4444", 2: "#FF8C00", 1: "#FFD700", 0: "#00C49F"}
-            urgency_labels = {3: "Critical", 2: "Abnormal", 1: "Mild finding", 0: "Normal"}
+            urgency_labels = {
+                3: t("urgency_critical"),
+                2: t("urgency_abnormal"),
+                1: t("urgency_mild"),
+                0: t("urgency_normal"),
+            }
             conditions = result.get("conditions", [result.get("primary", "NORM")])
             per_class  = result.get("per_class", {})
 
@@ -636,13 +663,13 @@ if 'signal' in st.session_state:
             _norm_only  = all(_URGENCY.get(c, 0) == 0 for c in conditions)
 
             if _norm_only:
-                st.success("**Normal ECG** — No significant findings detected.")
+                st.success(t("normal_ecg_msg"))
             else:
                 _parts = []
-                if _n_critical: _parts.append(f"**{_n_critical} critical**")
-                if _n_abnormal: _parts.append(f"**{_n_abnormal} abnormal**")
-                if _n_mild:     _parts.append(f"{_n_mild} mild")
-                _summary_msg = "Findings: " + ", ".join(_parts)
+                if _n_critical: _parts.append(t("findings_critical", n=_n_critical))
+                if _n_abnormal: _parts.append(t("findings_abnormal", n=_n_abnormal))
+                if _n_mild:     _parts.append(t("findings_mild", n=_n_mild))
+                _summary_msg = t("findings_prefix", parts=", ".join(_parts))
                 if _n_critical:
                     st.error(_summary_msg)
                 elif _n_abnormal:
@@ -688,7 +715,7 @@ if 'signal' in st.session_state:
                     </div>
                 """, unsafe_allow_html=True)
 
-            with st.expander("All condition probabilities"):
+            with st.expander(t("all_cond_probs")):
                 sorted_codes = sorted(per_class.items(), key=lambda x: -x[1].get("prob", 0))
                 prob_cols = st.columns(4)
                 for i, (code, info) in enumerate(sorted_codes):
@@ -724,10 +751,13 @@ if 'signal' in st.session_state:
 
             # Hybrid classifier details (voltage criteria, adjustments)
             if result.get("voltage_criteria") or result.get("adjustment_applied"):
-                with st.expander("Hybrid classifier details"):
+                with st.expander(t("hybrid_details")):
                     if result.get("adjustment_applied"):
-                        st.info(f"Adjustment: {result['adjustment_applied']}")
-                        st.caption(f"CNN raw: {result.get('cnn_raw_prediction')} ({result.get('cnn_raw_confidence', 0):.0%})")
+                        st.info(t("hybrid_adjustment", text=result['adjustment_applied']))
+                        st.caption(t("hybrid_cnn_raw",
+                            pred=result.get('cnn_raw_prediction'),
+                            conf=result.get('cnn_raw_confidence', 0),
+                        ))
                     vc = result.get("voltage_criteria", {})
                     if vc:
                         vc_cols = st.columns(3)
@@ -735,21 +765,21 @@ if 'signal' in st.session_state:
                         cn = vc.get("cornell", {})
                         rv = vc.get("rvh_r_v1", {})
                         vc_cols[0].metric(
-                            "Sokolow-Lyon",
+                            t("sokolow_lyon"),
                             f"{sl.get('value', 0):.2f} mV",
-                            "MET" if sl.get("met") else "not met",
+                            t("met_label") if sl.get("met") else t("not_met_label"),
                             delta_color="inverse" if sl.get("met") else "off",
                         )
                         vc_cols[1].metric(
-                            "Cornell",
+                            t("cornell"),
                             f"{cn.get('value', 0):.2f} mV",
-                            "MET" if cn.get("met") else "not met",
+                            t("met_label") if cn.get("met") else t("not_met_label"),
                             delta_color="inverse" if cn.get("met") else "off",
                         )
                         vc_cols[2].metric(
-                            "RVH (R in V1)",
+                            t("rvh_r_v1"),
                             f"{rv.get('value', 0):.2f} mV",
-                            "MET" if rv.get("met") else "not met",
+                            t("met_label") if rv.get("met") else t("not_met_label"),
                             delta_color="inverse" if rv.get("met") else "off",
                         )
 
@@ -758,7 +788,7 @@ if 'signal' in st.session_state:
 
     # ── Multi-Lead ST Territory Analysis ──
     if ST_TERRITORY_AVAILABLE and "signals_12" in st.session_state and "lead_names" in st.session_state:
-        st.markdown("#### ST-Segment Territory Analysis")
+        st.markdown(t("st_territory_header"))
 
         st_result = analyze_st_territories(
             st.session_state.signals_12,
@@ -791,16 +821,20 @@ if 'signal' in st.session_state:
                 st.caption(f"**{terr_name}** — {finding['interpretation']}")
 
         # Per-lead ST deviation table
-        with st.expander("Per-lead ST measurements"):
+        with st.expander(t("per_lead_st")):
             lead_data = []
             for lead_name, lr in st_result["lead_results"].items():
                 st_mv = lr["st_mv"]
-                status = "Elevated" if st_mv >= 0.1 else ("Depressed" if st_mv <= -0.05 else "Normal")
+                status = (
+                    t("st_elevated") if st_mv >= 0.1
+                    else t("st_depressed") if st_mv <= -0.05
+                    else t("st_normal")
+                )
                 lead_data.append({
-                    "Lead": lead_name,
-                    "ST (mV)": f"{st_mv:+.3f}",
-                    "Status": status,
-                    "Beats": lr["n_beats"],
+                    t("lead_col"): lead_name,
+                    t("st_mv_col"): f"{st_mv:+.3f}",
+                    t("status_col"): status,
+                    t("beats_col"): lr["n_beats"],
                 })
             import pandas as pd
             st.dataframe(pd.DataFrame(lead_data), width='stretch', hide_index=True)
@@ -815,13 +849,14 @@ if 'signal' in st.session_state:
         )
 
         if rules_result["findings"] or rules_result["axis"] is not None:
-            st.markdown("#### Clinical Rules Analysis")
+            st.markdown(t("clinical_rules_header"))
 
             # Axis display
             if rules_result["axis"] is not None:
                 axis_col1, axis_col2 = st.columns(2)
-                axis_col1.metric("Cardiac Axis", f"{rules_result['axis']:.0f} deg")
-                axis_col2.metric("Axis Deviation", rules_result["axis_deviation"])
+                axis_col1.metric(t("cardiac_axis_metric"),
+                    t("cardiac_axis_unit", val=rules_result['axis']))
+                axis_col2.metric(t("axis_deviation_metric"), rules_result["axis_deviation"])
 
             # Findings
             for finding in rules_result["findings"]:
@@ -837,7 +872,7 @@ if 'signal' in st.session_state:
     # ── Save analysis to DB ──
     if DB_AVAILABLE and st.session_state.get("current_patient_id"):
         st.markdown("---")
-        if st.button("Save Analysis to Patient Record"):
+        if st.button(t("save_analysis_btn")):
             pid = st.session_state["current_patient_id"]
             # Save EKG record
             ekg_id = save_ekg_record(
@@ -884,39 +919,45 @@ if 'signal' in st.session_state:
                 st_summary=st_summary_text,
                 urgency=st_res.get("urgency") if st_summary_text else None,
             )
-            st.success(f"Analysis saved to patient record (EKG ID: {ekg_id})")
+            st.success(t("analysis_saved_msg", eid=ekg_id))
 
     # ── Patient History ──
     if DB_AVAILABLE and st.session_state.get("current_patient_id"):
-        with st.expander("Patient History"):
+        with st.expander(t("patient_history")):
             records = get_patient_records(st.session_state["current_patient_id"])
             if records:
                 import pandas as pd
                 hist_data = []
                 for r in records:
                     hist_data.append({
-                        "Date": r.get("captured_at", ""),
-                        "Source": r.get("acquisition_source", ""),
-                        "Classification": r.get("classification", "-"),
-                        "Confidence": f"{r['confidence']:.0%}" if r.get("confidence") else "-",
-                        "HR": r.get("heart_rate", "-"),
-                        "Urgency": r.get("urgency", "-"),
+                        t("history_date_col"):   r.get("captured_at", ""),
+                        t("history_source_col"): r.get("acquisition_source", ""),
+                        t("history_class_col"):  r.get("classification", "-"),
+                        t("history_conf_col"):   f"{r['confidence']:.0%}" if r.get("confidence") else "-",
+                        t("history_hr_col"):     r.get("heart_rate", "-"),
+                        t("history_urgency_col"):r.get("urgency", "-"),
                     })
                 st.dataframe(pd.DataFrame(hist_data), width='stretch', hide_index=True)
             else:
-                st.caption("No previous records for this patient.")
+                st.caption(t("no_records_caption"))
 
     # ── Export & Share ──
     st.markdown("---")
-    st.markdown("#### Export & Share")
+    st.markdown(t("export_header"))
 
     # Build shareable text summary
     _share_lines = []
     _pname = f"{patient_profile.get('first_name', '')} {patient_profile.get('last_name', '')}".strip()
     _pid = patient_profile.get("id_number", "")
-    _share_lines.append(f"ECG Report - {_pname or 'Patient'}" + (f" (ID: {_pid})" if _pid else ""))
-    _share_lines.append(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    _share_lines.append(f"Age: {patient_profile.get('age', 'N/A')} | Sex: {patient_profile.get('sex', 'N/A')}")
+    _share_lines.append(
+        f"{t('share_ecg_report')} - {_pname or t('share_patient_fallback')}"
+        + (f" (ID: {_pid})" if _pid else "")
+    )
+    _share_lines.append(f"{t('share_date_label')}: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    _share_lines.append(t("share_age_sex",
+        age=patient_profile.get('age', 'N/A'),
+        sex=patient_profile.get('sex', 'N/A'),
+    ))
     _share_lines.append("")
 
     _clf_for_share = None
@@ -925,7 +966,7 @@ if 'signal' in st.session_state:
         pred = _clf_for_share["prediction"]
         desc = _clf_for_share["description"]
         conf = _clf_for_share["confidence"]
-        _share_lines.append(f"AI Diagnosis: {pred} - {desc} ({conf:.0%})")
+        _share_lines.append(f"{t('share_ai_diagnosis')}: {pred} - {desc} ({conf:.0%})")
 
     _intervals_for_share = None
     _flags_for_share = None
@@ -939,7 +980,7 @@ if 'signal' in st.session_state:
                 pr = _intervals_for_share.get("pr", "N/A")
                 qrs = _intervals_for_share.get("qrs", "N/A")
                 qtc = _intervals_for_share.get("qtc", "N/A")
-                _share_lines.append(f"HR: {hr} bpm | PR: {pr} ms | QRS: {qrs} ms | QTc: {qtc} ms")
+                _share_lines.append(t("share_intervals", hr=hr, pr=pr, qrs=qrs, qtc=qtc))
         except Exception:
             pass
 
@@ -949,11 +990,11 @@ if 'signal' in st.session_state:
             st.session_state.signals_12, st.session_state.fs,
             st.session_state.lead_names, patient_sex=patient_profile.get("sex", "M"),
         )
-        _share_lines.append(f"ST Analysis: {_st_for_share.get('summary', 'N/A')}")
+        _share_lines.append(f"{t('share_st_analysis')}: {_st_for_share.get('summary', 'N/A')}")
 
     if _flags_for_share:
         _share_lines.append("")
-        _share_lines.append("Findings:")
+        _share_lines.append(t("share_findings_header"))
         for f in _flags_for_share:
             if isinstance(f, dict):
                 # Convert clinical flag dict to readable string
@@ -967,7 +1008,7 @@ if 'signal' in st.session_state:
                 _share_lines.append(f"- {clean}")
 
     _share_lines.append("")
-    _share_lines.append("-- EKG Intelligence Platform")
+    _share_lines.append(t("share_platform"))
 
     share_text = "\n".join(_share_lines)
 
@@ -992,10 +1033,10 @@ if 'signal' in st.session_state:
             if isinstance(pdf_bytes, bytearray):
                 pdf_bytes = bytes(pdf_bytes)
             if not isinstance(pdf_bytes, (bytes, bytearray)):
-                st.warning("PDF generator did not return binary bytes. Download unavailable.")
+                st.warning(t("pdf_warning"))
             else:
                 st.download_button(
-                    label="PDF Report",
+                    label=t("pdf_btn"),
                     data=pdf_bytes,
                     file_name=filename,
                     mime="application/pdf",
@@ -1004,40 +1045,44 @@ if 'signal' in st.session_state:
     # Email share
     with col_email:
         import urllib.parse
-        email_subject = urllib.parse.quote(f"ECG Report - {_pname or 'Patient'}")
+        email_subject = urllib.parse.quote(
+            f"{t('share_ecg_report')} - {_pname or t('share_patient_fallback')}"
+        )
         email_body = urllib.parse.quote(share_text)
         mailto_link = f"mailto:?subject={email_subject}&body={email_body}"
-        st.link_button("Email", mailto_link)
+        st.link_button(t("email_btn"), mailto_link)
 
     # WhatsApp share
     with col_whatsapp:
         wa_text = urllib.parse.quote(share_text)
         wa_link = f"https://wa.me/?text={wa_text}"
-        st.link_button("WhatsApp", wa_link)
+        st.link_button(t("whatsapp_btn"), wa_link)
 
     # Copy to clipboard
     with col_copy:
         import json as _json
-        # Safely embed the text in JS using JSON encoding
         safe_js_str = _json.dumps(share_text)
+        copy_label = t("copy_btn")
+        copied_label = t("copied_btn")
         copy_js = f"""
             <button onclick="navigator.clipboard.writeText({safe_js_str})
-                .then(() => {{ this.innerText='Copied!'; setTimeout(() => this.innerText='Copy Text', 2000); }})"
+                .then(() => {{ this.innerText={_json.dumps(copied_label)};
+                               setTimeout(() => this.innerText={_json.dumps(copy_label)}, 2000); }})"
                 style="background-color:#FF6B6B; color:white; border:none;
                        padding:8px 16px; border-radius:8px; cursor:pointer;
                        font-size:14px; width:100%;">
-                Copy Text
+                {copy_label}
             </button>
         """
         st.markdown(copy_js, unsafe_allow_html=True)
 
     # Expandable preview
-    with st.expander("Preview share text"):
+    with st.expander(t("preview_share")):
         st.code(share_text, language=None)
 
     # ── Legacy single-lead ST Analysis (fallback) ──
     if not (ST_TERRITORY_AVAILABLE and "signals_12" in st.session_state and "lead_names" in st.session_state):
-        st.markdown("#### ST-Segment Analysis")
+        st.markdown(t("st_analysis_header"))
         st_res = analyze_st_segment(st.session_state.signal, st.session_state.fs)
         fig, ax = plt.subplots(figsize=(12, 3.5))
         ax.plot(st.session_state.signal[:1500], color='#FF6B6B', linewidth=1.5)
@@ -1056,10 +1101,10 @@ if 'signal' in st.session_state:
         if st_res:
             elev = st_res.get('mm_elev')
             if elev is None or np.isnan(elev):
-                st.info("ST segment analysis returned no elevation estimate.")
+                st.info(t("st_no_estimate"))
             elif elev >= 1.0:
-                st.error(f"🚨 OMI ALERT: ST-Elevation {elev:.2f} mm")
+                st.error(t("st_omi_alert", val=elev))
             elif elev <= -1.0:
-                st.warning(f"⚠️ ISCHEMIA: ST-Depression {elev:.2f} mm")
+                st.warning(t("st_ischemia", val=elev))
             else:
-                st.success("✅ ST-Segment Stable")
+                st.success(t("st_stable"))
