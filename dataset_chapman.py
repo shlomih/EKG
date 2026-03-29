@@ -46,9 +46,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-CHAPMAN_BASE   = "ekg_datasets/chapman"
-CHAPMAN_INDEX  = "ekg_datasets/chapman_index.csv"
-PHYSIONET_DB   = "ecg-arrhythmia/1.0.0"
+CHAPMAN_BASE      = "ekg_datasets/chapman"
+CHAPMAN_INDEX     = "ekg_datasets/chapman_index.csv"
+PHYSIONET_BASE    = "https://physionet.org/files/ecg-arrhythmia/1.0.0"
 
 # SNOMED-CT code → our multi-label code
 # Only map codes that appear in our label set (or AFIB which we add)
@@ -97,13 +97,85 @@ N_MERGED = len(MERGED_CODES)
 # ---------------------------------------------------------------------------
 
 def download_chapman(base_path: str = CHAPMAN_BASE):
-    """Download Chapman-Shaoxing from PhysioNet (~20 GB). Takes ~30-60 min."""
-    import wfdb
-    Path(base_path).mkdir(parents=True, exist_ok=True)
+    """Download Chapman-Shaoxing from PhysioNet (~20 GB) using direct HTTP.
+
+    Bypasses wfdb.dl_database which crashes on Chapman's empty-date headers.
+    Downloads all .hea and .mat files via requests.
+    """
+    import requests
+
+    base = Path(base_path)
+    base.mkdir(parents=True, exist_ok=True)
     print(f"Downloading Chapman-Shaoxing to {base_path} ...")
     print("This takes 30–60 minutes depending on connection speed.")
-    wfdb.dl_database(PHYSIONET_DB, base_path)
-    print("Download complete.")
+
+    session = requests.Session()
+    session.headers["User-Agent"] = "wfdb-python/4.3.1"
+
+    def _get_text(url):
+        r = session.get(url, timeout=30)
+        r.raise_for_status()
+        return r.text
+
+    def _download_file(url, dest: Path):
+        if dest.exists():
+            return  # skip already downloaded
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        r = session.get(url, timeout=60, stream=True)
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(65536):
+                f.write(chunk)
+
+    # 1. Top-level RECORDS lists subdirectories like "WFDBRecords/01/010/"
+    top_records = _get_text(f"{PHYSIONET_BASE}/RECORDS").splitlines()
+    top_records = [r.strip().rstrip("/") for r in top_records if r.strip()]
+    print(f"  {len(top_records)} subdirectories to scan ...")
+
+    all_records = []
+    for i, subdir in enumerate(top_records):
+        sub_url = f"{PHYSIONET_BASE}/{subdir}/RECORDS"
+        try:
+            sub_lines = _get_text(sub_url).splitlines()
+        except Exception:
+            continue
+        for rec in sub_lines:
+            rec = rec.strip()
+            if rec:
+                all_records.append(f"{subdir}/{rec}")
+        if (i + 1) % 50 == 0:
+            print(f"    scanned {i+1}/{len(top_records)} dirs ...", end="\r", flush=True)
+
+    print(f"\n  {len(all_records)} records to download (16 parallel workers) ...")
+    t0 = time.time()
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    n_done = 0
+    lock = threading.Lock()
+
+    def _download_record(rec_path):
+        for ext in (".hea", ".mat"):
+            url  = f"{PHYSIONET_BASE}/{rec_path}{ext}"
+            dest = base / f"{rec_path}{ext}"
+            try:
+                _download_file(url, dest)
+            except Exception as e:
+                print(f"\n  WARN: {rec_path}{ext} — {e}")
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futures = {pool.submit(_download_record, r): r for r in all_records}
+        for fut in as_completed(futures):
+            with lock:
+                n_done += 1
+                if n_done % 500 == 0 or n_done == len(all_records):
+                    elapsed = time.time() - t0
+                    rate = n_done / elapsed
+                    eta  = (len(all_records) - n_done) / rate / 60
+                    print(f"    {n_done}/{len(all_records)}  {rate:.0f} rec/s  ETA ~{eta:.0f} min",
+                          flush=True)
+
+    n_mat = len(list(base.rglob("*.mat")))
+    print(f"\nDownload complete. {n_mat} .mat files in {base_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +245,7 @@ def build_chapman_index(base_path: str = CHAPMAN_BASE,
     df = pd.DataFrame(rows)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
-    print(f"\nIndexed {len(df)} records → {output_path}")
+    print(f"\nIndexed {len(df)} records -> {output_path}")
     _print_label_stats(df)
     return df
 
