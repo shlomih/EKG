@@ -601,7 +601,7 @@ def analyze_clinical_rules(signals_12, fs, lead_names, patient_profile=None):
 
     # Build summary
     if not findings:
-        summary = f"No additional findings. Axis: {axis:.0f} degrees (normal)." if axis else "No additional findings detected."
+        summary = f"No additional findings. Axis: {axis:.0f} degrees (normal)." if axis is not None else "No additional findings detected."
     else:
         critical = sum(1 for f in findings if f["severity"] == "CRITICAL")
         warnings = sum(1 for f in findings if f["severity"] == "WARNING")

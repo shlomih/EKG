@@ -109,7 +109,7 @@ def precompute(paths, labels, aux, device):
     print(f"\n  Done in {time.time()-t0:.0f}s")
     np.savez(EMBED_CACHE, embeds=embeds, labels=labels, aux=aux,
              paths=np.array(paths))
-    print(f"  Saved cache → {EMBED_CACHE}")
+    print(f"  Saved cache -> {EMBED_CACHE}")
     return embeds
 
 
@@ -193,7 +193,7 @@ def train_head(n_epochs=60, patience=12, lr=1e-3):
                         "macro_f1": macro_f1, "hyp_f1": hyp_f1,
                         "label_codes": MULTILABEL_CODES},
                        CKPT_OUT)
-            print(f"       ↑ saved (macro_f1={macro_f1:.3f})")
+            print(f"       ^ saved (macro_f1={macro_f1:.3f})")
         else:
             no_improve += 1
             if no_improve >= patience:

@@ -433,7 +433,14 @@ def run_full_analysis(signal, fs, p):
     if context.get("flags"):
         with st.expander(t("clinical_findings"), expanded=True):
             for flag in context["flags"]:
-                st.write(flag)
+                sev = flag.get("severity", "INFO")
+                text = f"**{flag.get('finding', '')}** — {flag.get('explanation', '')}"
+                if sev == "CRITICAL":
+                    st.error(text)
+                elif sev == "WARNING":
+                    st.warning(text)
+                else:
+                    st.info(text)
 
 # ─────────────────────────────────────────────────────────────
 # INPUT TABS
@@ -976,6 +983,16 @@ if 'signal' in st.session_state:
             if not _intervals_for_share.get("error"):
                 ctx = apply_clinical_context(_intervals_for_share, patient_profile)
                 _flags_for_share = ctx.get("flags", [])
+                # Merge clinical rules findings (axis, T-waves, posterior STEMI, etc.)
+                if CLINICAL_RULES_AVAILABLE and "signals_12" in st.session_state and "lead_names" in st.session_state:
+                    try:
+                        _rules_for_share = analyze_clinical_rules(
+                            st.session_state.signals_12, st.session_state.fs,
+                            st.session_state.lead_names, patient_profile,
+                        )
+                        _flags_for_share = _flags_for_share + _rules_for_share.get("findings", [])
+                    except Exception:
+                        pass
                 hr = _intervals_for_share.get("hr", "N/A")
                 pr = _intervals_for_share.get("pr", "N/A")
                 qrs = _intervals_for_share.get("qrs", "N/A")

@@ -317,12 +317,19 @@ def generate_pdf_report(patient_profile, classification=None, intervals=None,
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(2)
 
-        pdf.set_font("Helvetica", "", 9)
+        sev_markers = {"CRITICAL": "[!!!]", "WARNING": "[!]", "INFO": "[i]", "NORMAL": ""}
         for flag in clinical_flags:
             if isinstance(flag, dict):
-                flag = flag.get("finding") or flag.get("text") or str(flag)
-            clean = str(flag).encode("ascii", "ignore").decode().strip()
+                marker = sev_markers.get(flag.get("severity", ""), "")
+                text = flag.get("finding") or flag.get("text") or str(flag)
+                prefix = f"{marker} " if marker else ""
+            else:
+                prefix = ""
+                text = str(flag)
+            clean = f"{prefix}{text}".encode("ascii", "ignore").decode().strip()
             if clean:
+                bold = isinstance(flag, dict) and flag.get("severity") == "CRITICAL"
+                pdf.set_font("Helvetica", "B" if bold else "", 9)
                 pdf.cell(0, 5, f"- {clean}", ln=True)
         pdf.ln(2)
 
