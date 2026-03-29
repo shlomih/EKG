@@ -233,16 +233,16 @@ def train(batch_size: int = 64, n_epochs: int = 60, patience: int = 12):
     # Final test evaluation
     if best_state:
         model.load_state_dict(best_state)
-    tm = evaluate(model, test_loader, device)
-    _print_merged_results(tm, model, test_loader, device)
-
     torch.save({
         "model_state": best_state or model.state_dict(),
         "best_auroc":  best_auroc,
         "label_codes": MERGED_CODES,
         "n_classes":   N_CLASSES,
     }, MODEL_PATH)
-    print(f"\n  Saved -> {MODEL_PATH}")
+    print(f"\n  Saved: {MODEL_PATH}")
+
+    tm = evaluate(model, test_loader, device)
+    _print_merged_results(tm, model, test_loader, device)
 
 
 def _print_merged_results(m, model, loader, device):
@@ -261,21 +261,27 @@ def _print_merged_results(m, model, loader, device):
 
     macro_f1    = f1_score(labels, preds, average="macro",   zero_division=0)
     micro_f1    = f1_score(labels, preds, average="micro",   zero_division=0)
-    macro_auroc = roc_auc_score(labels, probs, average="macro")
-    per_f1      = f1_score(labels, preds, average=None,      zero_division=0)
-    per_auroc   = roc_auc_score(labels, probs, average=None)
+    # Only compute AUROC for classes that have at least one positive in test set
+    valid = np.where(labels.sum(axis=0) > 0)[0]
+    per_auroc = np.full(len(MERGED_CODES), float("nan"))
+    if len(valid) > 0:
+        per_auroc[valid] = roc_auc_score(labels[:, valid], probs[:, valid], average=None)
+    macro_auroc = np.nanmean(per_auroc)
+
+    per_f1 = f1_score(labels, preds, average=None, zero_division=0)
 
     print(f"\n{'=' * 60}")
-    print(f"  Merged Model — Test Results (PTB-XL fold 10)")
+    print(f"  Merged Model - Test Results (PTB-XL fold 10)")
     print(f"{'=' * 60}")
     print(f"  MacroF1   : {macro_f1:.3f}   (12-class CNN baseline: 0.699)")
     print(f"  MicroF1   : {micro_f1:.3f}")
     print(f"  MacroAUROC: {macro_auroc:.3f}  (12-class CNN baseline: 0.972)")
-    print(f"\n  Per-class (★ = new label):")
+    print(f"\n  Per-class ([NEW] = added from Chapman):")
     for i, code in enumerate(MERGED_CODES):
-        new = " ★" if code in ("AFIB", "STACH") else "  "
+        tag   = " [NEW]" if code in ("AFIB", "STACH") else "      "
         n_pos = int(labels[:, i].sum())
-        print(f"    {code:>6}{new}: F1={per_f1[i]:.3f}  AUROC={per_auroc[i]:.3f}  (n={n_pos})")
+        auroc_str = f"{per_auroc[i]:.3f}" if not np.isnan(per_auroc[i]) else "  n/a"
+        print(f"    {code:>6}{tag}: F1={per_f1[i]:.3f}  AUROC={auroc_str}  (n={n_pos})")
 
 
 # ── Eval only ─────────────────────────────────────────────────────────────────
