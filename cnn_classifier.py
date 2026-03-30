@@ -61,7 +61,7 @@ N_LEADS = 12
 
 # v10: amplitude-preserving normalization constant.
 # Dividing by 5 mV keeps the CNN input in [-4, +4] range while preserving
-# absolute voltage relationships (Sokolow threshold 3.5 mV → 0.70 after norm).
+# absolute voltage relationships (Sokolow threshold 3.5 mV -> 0.70 after norm).
 GLOBAL_NORM_SCALE = 5.0
 N_CLASSES = 5
 
@@ -93,7 +93,7 @@ def _detect_r_peaks_simple(lead_sig, fs):
     for i in range(1, len(above)):
         if above[i] - above[i - 1] > fs // 2:
             crossings.append(above[i])
-    # Refine to local maximum within ±100ms window
+    # Refine to local maximum within +/-100ms window
     win = fs // 10
     refined = []
     for c in crossings:
@@ -137,7 +137,7 @@ def _t_wave_strain_score(sig_12xN, fs):
 def _qrs_duration_norm(sig_12xN, fs):
     """
     Estimate QRS duration in lead II, normalised by 200 ms (return in [0, 1]).
-    Typical normal: 80–100 ms (0.40–0.50). LVH/BBB: 100–120+ ms (0.50–0.60+).
+    Typical normal: 80-100 ms (0.40-0.50). LVH/BBB: 100-120+ ms (0.50-0.60+).
     """
     lead = sig_12xN[_LEAD_IDX["II"]].copy()
     lead -= np.mean(lead)
@@ -145,7 +145,7 @@ def _qrs_duration_norm(sig_12xN, fs):
     if len(r_peaks) < 1:
         return 0.5   # default ~100 ms
 
-    win = int(0.08 * fs)   # ±80 ms around each R peak
+    win = int(0.08 * fs)   # +/-80 ms around each R peak
     durations = []
     for pk in r_peaks:
         s = max(0, pk - win)
@@ -169,7 +169,7 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
     """
     Extract 14-dim voltage + demographic feature vector from raw (12, N) signal in mV.
 
-    Indices 0-10: same as v9 (backward compat — old n_aux=11 models slice [:11])
+    Indices 0-10: same as v9 (backward compat -- old n_aux=11 models slice [:11])
       0: S(V1)              /3.0   S-wave depth in V1 (LVH marker)
       1: max(R_V5, R_V6)   /3.0   Tall R in lateral leads (LVH marker)
       2: Sokolow-Lyon value /5.0   S(V1)+max(R_V5,R_V6); threshold 3.5 mV
@@ -185,7 +185,7 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
     New in v10 (indices 11-13):
      11: T-wave strain score        LVH strain in V5/V6/aVL [0,1]; 1=inverted T
      12: QRS duration norm          QRS_ms/200; normal~0.45, LVH/BBB~0.55+
-     13: Cornell VDP norm           (Cornell × QRS_ms)/2440; >1 = criterion met
+     13: Cornell VDP norm           (Cornell x QRS_ms)/2440; >1 = criterion met
     """
     def _rs(lead_idx):
         lead = sig_12xN[lead_idx]
@@ -211,7 +211,7 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
 
     # New morphology features (v10)
     n_samples = sig_12xN.shape[1]
-    fs_est    = n_samples // 10   # assume 10-second recording → 500 Hz
+    fs_est    = n_samples // 10   # assume 10-second recording -> 500 Hz
     t_strain  = _t_wave_strain_score(sig_12xN, fs_est)
     qrs_norm  = _qrs_duration_norm(sig_12xN, fs_est)
     qrs_ms    = qrs_norm * 200.0
@@ -229,9 +229,9 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
         float(sex == "F"),
         float(np.clip(float(age) / 80.0, 0, 1)),
         axis_norm,          # index 10
-        t_strain,           # index 11 — new v10
-        qrs_norm,           # index 12 — new v10
-        cvdp_norm,          # index 13 — new v10
+        t_strain,           # index 11 -- new v10
+        qrs_norm,           # index 12 -- new v10
+        cvdp_norm,          # index 13 -- new v10
     ], dtype=np.float32)
 
     return feats
@@ -242,7 +242,7 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
 # -------------------------------------------------------------
 
 class FocalLoss(nn.Module):
-    """Focal Loss — down-weights easy examples, focuses on hard misclassifications.
+    """Focal Loss -- down-weights easy examples, focuses on hard misclassifications.
     Especially effective for rare classes like HYP where the model is often wrong.
     
     Phase 1 Improvement: Per-class gamma tuning.
@@ -306,13 +306,13 @@ class AsymmetricLoss(nn.Module):
     Asymmetric Loss (Ridnik et al. 2021) adapted for single-label multi-class.
 
     Key idea: apply a *stricter* focusing penalty to non-target class predictions
-    (γ- > γ+). This directly penalises samples where p(HYP) is high but the true
-    label is NORM/MI/STTC/CD — the dominant failure mode for HYP false positives.
+    (gamma- > gamma+). This directly penalises samples where p(HYP) is high but the true
+    label is NORM/MI/STTC/CD -- the dominant failure mode for HYP false positives.
 
-    margin (m): clips easy negatives — any p < m is treated as 0. This prevents
+    margin (m): clips easy negatives -- any p < m is treated as 0. This prevents
     the model from wasting gradient on trivially correct negatives.
 
-    Recommended defaults: γ+=0, γ-=4, m=0.05 (from original paper).
+    Recommended defaults: gamma+=0, gamma-=4, m=0.05 (from original paper).
     """
     def __init__(self, weight=None, gamma_pos=0.0, gamma_neg=4.0,
                  margin=0.05, label_smoothing=0.05):
@@ -556,7 +556,7 @@ class ECGNetTransformer(nn.Module):
                  n_heads=4, n_tf_layers=2, dim_ff=512, tf_dropout=0.1):
         super().__init__()
 
-        # CNN frontend — identical to ECGNetJoint up through expand3
+        # CNN frontend -- identical to ECGNetJoint up through expand3
         self.stem = nn.Sequential(
             nn.Conv1d(n_leads, 64, kernel_size=15, padding=7),
             nn.BatchNorm1d(64),
@@ -583,13 +583,13 @@ class ECGNetTransformer(nn.Module):
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
         )
-        # Final conv blocks without pooling — keep 78-step sequence
+        # Final conv blocks without pooling -- keep 78-step sequence
         self.layer3_conv = nn.Sequential(
             ECGResBlock(256, kernel_size=5, dropout=0.3, use_se=True),
             ECGResBlock(256, kernel_size=3, dropout=0.3),
         )
 
-        # Learned positional embeddings (78 positions × 256 dims)
+        # Learned positional embeddings (78 positions x 256 dims)
         self.pos_embed = nn.Parameter(torch.zeros(1, self.SEQ_LEN, 256))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
@@ -631,9 +631,9 @@ class ECGNetTransformer(nn.Module):
         # Transformer backend
         x = x.transpose(1, 2)              # (B, 78, 256)
         x = x + self.pos_embed             # add positional encoding
-        x = self.transformer(x)            # (B, 78, 256)  — global attention
+        x = self.transformer(x)            # (B, 78, 256)  -- global attention
         x = self.tf_norm(x)
-        x = x.mean(dim=1)                  # (B, 256)  — mean pool
+        x = x.mean(dim=1)                  # (B, 256)  -- mean pool
 
         # Aux branch + fusion
         a = self.aux_branch(aux)           # (B, 32)
@@ -688,7 +688,7 @@ def augment_signal(sig):
 def _load_raw_signal(rec_path):
     """
     Load a WFDB record from disk and return raw physical signal (mV) as (12, 5000) float32.
-    No per-lead normalization applied — values are in millivolts.
+    No per-lead normalization applied -- values are in millivolts.
     """
     try:
         rec = wfdb.rdrecord(rec_path)
@@ -741,7 +741,7 @@ def _normalize_signal(sig):
     """v10+: per-lead baseline removal + fixed global scale (amplitude-preserving).
 
     Key change: divide by GLOBAL_NORM_SCALE (5 mV) instead of per-lead std.
-    This preserves absolute voltage relationships across leads and patients —
+    This preserves absolute voltage relationships across leads and patients --
     critical for HYP where Sokolow-Lyon (>3.5 mV) and Cornell (>2.8 mV) are
     defined by absolute millivolt thresholds.
 
@@ -791,7 +791,7 @@ def preload_all(all_paths):
 
 
 def preload_signals(all_paths):
-    """Backward-compatible wrapper — returns signal_cache only."""
+    """Backward-compatible wrapper -- returns signal_cache only."""
     signal_cache, _ = preload_all(all_paths)
     return signal_cache
 
@@ -1112,7 +1112,7 @@ def train(use_multi=False):
     val_loader   = DataLoader(val_ds,   batch_size=64, shuffle=False, num_workers=0, pin_memory=True)
     test_loader  = DataLoader(test_ds,  batch_size=64, shuffle=False, num_workers=0, pin_memory=True)
 
-    # v10: ECGNetJoint — best performing arch from v8; isolate normalization change
+    # v10: ECGNetJoint -- best performing arch from v8; isolate normalization change
     model = ECGNetJoint(n_leads=N_LEADS, n_classes=N_CLASSES, n_aux=N_AUX).to(device)
     param_count = sum(p.numel() for p in model.parameters())
     print(f"\n  Model: ECGNetJoint  ({param_count:,} params)")
@@ -1334,7 +1334,7 @@ def predict_cnn(model_data, signal_12, fs=500, sex="M", age=50):
     raw = raw.T.astype(np.float32)         # (12, 5000) raw mV
     raw = np.clip(raw, -20.0, 20.0)
 
-    # Normalize for CNN input — dispatch based on what the model was trained with
+    # Normalize for CNN input -- dispatch based on what the model was trained with
     norm_mode = model_data.get("norm_mode", "zscore")
     if norm_mode == "amplitude":
         sig = _normalize_signal(raw)           # amplitude-preserving (v10+)

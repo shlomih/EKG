@@ -4,14 +4,14 @@ multilabel_merged.py
 Train 14-class multi-label ECG classifier on merged PTB-XL + Chapman-Shaoxing.
 
 New vs existing 12-class model:
-  Adds AFIB  (48 → 9,840 samples after merge)
-  Adds STACH (  4 → 7,255 samples after merge)
+  Adds AFIB  (48 -> 9,840 samples after merge)
+  Adds STACH (  4 -> 7,255 samples after merge)
 
 Label set (14 classes, MERGED_CODES from dataset_chapman.py):
   NORM, AFIB, PVC, LVH, IMI, ASMI, CLBBB, CRBBB, LAFB, 1AVB, ISC_, NDT, IRBBB, STACH
 
 Split strategy:
-  Test  : PTB-XL fold 10 only  (same as baseline — allows direct comparison)
+  Test  : PTB-XL fold 10 only  (same as baseline -- allows direct comparison)
   Val   : PTB-XL fold 9 only
   Train : PTB-XL folds 1-8  +  ALL Chapman records
 
@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import roc_auc_score, f1_score, precision_recall_fscore_support
 
 warnings.filterwarnings("ignore")
 os.chdir(Path(__file__).parent)
@@ -47,21 +47,68 @@ from multilabel_classifier import (
     preload_signals,
     load_demographics,
     compute_pos_weights,
-    evaluate,
+    CONF_THRESHOLD,
 )
 from dataset_chapman import MERGED_CODES, N_MERGED, load_chapman_multilabel
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# -- Constants -----------------------------------------------------------------
 MODEL_PATH = "models/ecg_multilabel_v2.pt"
 N_CLASSES  = N_MERGED   # 14
 
-# Mapping from 12-class PTB-XL index → 14-class MERGED index
+# Mapping from 12-class PTB-XL index -> 14-class MERGED index
 PTBXL_TO_MERGED = np.array([
     MERGED_CODES.index(c) for c in MULTILABEL_CODES
 ], dtype=int)   # shape (12,)
 
 
-# ── Dataset with lazy fallback ────────────────────────────────────────────────
+# -- Evaluate (14-class aware) -------------------------------------------------
+def evaluate(model, loader, device, criterion=None):
+    """Like multilabel_classifier.evaluate but uses N_CLASSES (14) not N_ML_CLASSES (12)."""
+    model.eval()
+    all_logits, all_labels = [], []
+    total_loss = 0.0
+    n_batches  = 0
+
+    with torch.no_grad():
+        for sig, aux, lbl in loader:
+            sig, aux, lbl = sig.to(device), aux.to(device), lbl.to(device)
+            logits = model(sig, aux)
+            if criterion is not None:
+                total_loss += criterion(logits, lbl).item()
+                n_batches  += 1
+            all_logits.append(logits.cpu().numpy())
+            all_labels.append(lbl.cpu().numpy())
+
+    logits_np = np.vstack(all_logits)      # (N, 14)
+    labels_np = np.vstack(all_labels)      # (N, 14)
+    probs_np  = 1 / (1 + np.exp(-logits_np))
+    preds_np  = (probs_np >= CONF_THRESHOLD).astype(int)
+
+    aurocs = []
+    for i in range(N_CLASSES):
+        if labels_np[:, i].sum() > 0 and labels_np[:, i].sum() < len(labels_np):
+            aurocs.append(roc_auc_score(labels_np[:, i], probs_np[:, i]))
+        else:
+            aurocs.append(float("nan"))
+
+    _, _, f1s, _ = precision_recall_fscore_support(
+        labels_np, preds_np, average=None, labels=list(range(N_CLASSES)), zero_division=0
+    )
+
+    macro_auroc = float(np.nanmean(aurocs))
+    macro_f1    = float(np.nanmean(f1s))
+    avg_loss    = total_loss / max(n_batches, 1)
+
+    return {
+        "loss": avg_loss,
+        "macro_auroc": macro_auroc,
+        "macro_f1": macro_f1,
+        "per_class_auroc": aurocs,
+        "per_class_f1": f1s.tolist(),
+    }
+
+
+# -- Dataset with lazy fallback ------------------------------------------------
 class MergedECGDataset(Dataset):
     """Like MultiLabelECGDataset but loads from disk if not in cache (lazy fallback)."""
 
@@ -95,7 +142,7 @@ class MergedECGDataset(Dataset):
         )
 
 
-# ── Data loading ──────────────────────────────────────────────────────────────
+# -- Data loading --------------------------------------------------------------
 def load_merged_data():
     """
     Returns paths, label_matrix (N, 14), fold_array (N,).
@@ -105,21 +152,21 @@ def load_merged_data():
       10   : PTB-XL test fold  (never used for training)
       0    : Chapman records  (treated as training-only, excluded from test)
     """
-    # ── PTB-XL ────────────────────────────────────────────────────────────────
+    # -- PTB-XL ----------------------------------------------------------------
     ptb_paths, ptb_labels12, ptb_folds = load_multilabel_dataset()
     ptb_folds = np.array(ptb_folds)
 
-    # Expand 12-class → 14-class
+    # Expand 12-class -> 14-class
     N_ptb = len(ptb_paths)
     ptb_labels14 = np.zeros((N_ptb, N_CLASSES), dtype=np.float32)
     ptb_labels14[:, PTBXL_TO_MERGED] = ptb_labels12
 
-    # ── Chapman ───────────────────────────────────────────────────────────────
+    # -- Chapman ---------------------------------------------------------------
     chap_paths, chap_labels14 = load_chapman_multilabel()
     N_chap = len(chap_paths)
     chap_folds = np.zeros(N_chap, dtype=int)   # fold 0 = train-only
 
-    # ── Merge ─────────────────────────────────────────────────────────────────
+    # -- Merge -----------------------------------------------------------------
     all_paths  = ptb_paths + chap_paths
     all_labels = np.concatenate([ptb_labels14, chap_labels14], axis=0)
     all_folds  = np.concatenate([ptb_folds, chap_folds], axis=0)
@@ -135,7 +182,7 @@ def load_merged_data():
     return all_paths, all_labels, all_folds
 
 
-# ── Training ──────────────────────────────────────────────────────────────────
+# -- Training ------------------------------------------------------------------
 def train(batch_size: int = 64, n_epochs: int = 60, patience: int = 12):
     print("\n" + "=" * 60)
     print("  Merged Multi-Label ECG Classifier  (14 conditions)")
@@ -284,7 +331,7 @@ def _print_merged_results(m, model, loader, device):
         print(f"    {code:>6}{tag}: F1={per_f1[i]:.3f}  AUROC={auroc_str}  (n={n_pos})")
 
 
-# ── Eval only ─────────────────────────────────────────────────────────────────
+# -- Eval only -----------------------------------------------------------------
 def eval_saved():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt   = torch.load(MODEL_PATH, map_location=device, weights_only=False)
@@ -305,7 +352,7 @@ def eval_saved():
     _print_merged_results(None, model, test_loader, device)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# -- Main ----------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval", action="store_true", help="Evaluate saved model only")

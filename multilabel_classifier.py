@@ -17,11 +17,11 @@ clinically actionable conditions using exact SCP codes.
   ISC_   - Non-specific ischemic ST changes   (1,260)
   NDT    - Non-diagnostic T abnormalities     (1,824)
   IRBBB  - Incomplete RBBB                    (1,115)
-  NOTE: AFIB has only 48 confirmed cases in PTB-XL → needs Chapman-Shaoxing (Phase 3)
+  NOTE: AFIB has only 48 confirmed cases in PTB-XL -> needs Chapman-Shaoxing (Phase 3)
 
 Architecture:
   Reuses ECGNetJoint backbone from cnn_classifier.py (same CNN, same aux features)
-  Output head: Linear(288→12) with sigmoid — BCEWithLogitsLoss
+  Output head: Linear(288->12) with sigmoid -- BCEWithLogitsLoss
   Training uses per-class positive-frequency weighting (handles class imbalance)
 
 Usage:
@@ -63,7 +63,7 @@ from cnn_classifier import (
 
 MULTILABEL_CODES = [
     "NORM",   # 0  Normal ECG                         (9,438)
-    "PVC",    # 1  Ventricular premature complex       (1,027) ← replaces AFIB (only 48 in PTB-XL)
+    "PVC",    # 1  Ventricular premature complex       (1,027) <- replaces AFIB (only 48 in PTB-XL)
     "LVH",    # 2  Left ventricular hypertrophy        (1,751)
     "IMI",    # 3  Inferior myocardial infarction      (1,714)
     "ASMI",   # 4  Anteroseptal MI                     (2,007)
@@ -73,8 +73,8 @@ MULTILABEL_CODES = [
     "1AVB",   # 8  First-degree AV block               (  790)
     "ISC_",   # 9  Non-specific ischemic ST changes    (1,260)
     "NDT",    # 10 Non-diagnostic T abnormalities      (1,824)
-    "IRBBB",  # 11 Incomplete RBBB                     (1,115) ← replaces STACH (only 4 in PTB-XL)
-    # NOTE: AFIB needs Chapman-Shaoxing dataset (Phase 3) — PTB-XL has only 48 confirmed cases
+    "IRBBB",  # 11 Incomplete RBBB                     (1,115) <- replaces STACH (only 4 in PTB-XL)
+    # NOTE: AFIB needs Chapman-Shaoxing dataset (Phase 3) -- PTB-XL has only 48 confirmed cases
 ]
 
 N_ML_CLASSES  = len(MULTILABEL_CODES)
@@ -112,8 +112,8 @@ CLINICAL_GUIDANCE = {
         "note":   "",
     },
     "AFIB": {
-        "action": "Assess stroke risk (CHA₂DS₂-VASc score). Consider anticoagulation. Rate or rhythm control strategy.",
-        "note":   "Irregular irregular rhythm — no distinct P waves.",
+        "action": "Assess stroke risk (CHA2DS2-VASc score). Consider anticoagulation. Rate or rhythm control strategy.",
+        "note":   "Irregular irregular rhythm -- no distinct P waves.",
     },
     "PVC": {
         "action": "Assess frequency and symptoms. If >10% of beats or symptomatic, refer for Holter + echo.",
@@ -124,12 +124,12 @@ CLINICAL_GUIDANCE = {
         "note":   "Voltage criteria met. Cornell/Sokolow-Lyon thresholds exceeded.",
     },
     "IMI": {
-        "action": "If acute: activate cath lab. Check reciprocal changes in I/aVL. RV involvement (V1–V4R).",
+        "action": "If acute: activate cath lab. Check reciprocal changes in I/aVL. RV involvement (V1-V4R).",
         "note":   "Inferior territory: RCA or LCx. ST elevation II, III, aVF.",
     },
     "ASMI": {
-        "action": "If acute: activate cath lab. LAD territory. Anterior ST elevation in V1–V4.",
-        "note":   "Anterior/anteroseptal MI — high-risk territory. Check for LBBB masking.",
+        "action": "If acute: activate cath lab. LAD territory. Anterior ST elevation in V1-V4.",
+        "note":   "Anterior/anteroseptal MI -- high-risk territory. Check for LBBB masking.",
     },
     "CLBBB": {
         "action": "If new LBBB: treat as STEMI equivalent until proven otherwise. Check prior ECGs.",
@@ -141,7 +141,7 @@ CLINICAL_GUIDANCE = {
     },
     "LAFB": {
         "action": "Usually benign. If with RBBB (bifascicular block): monitor for complete heart block.",
-        "note":   "Left axis deviation (−45° to −90°), small Q in I/aVL.",
+        "note":   "Left axis deviation (-45 to -90 deg), small Q in I/aVL.",
     },
     "1AVB": {
         "action": "Usually benign. If PR >300ms or symptomatic: Holter monitoring.",
@@ -149,7 +149,7 @@ CLINICAL_GUIDANCE = {
     },
     "ISC_": {
         "action": "Correlate with symptoms. If chest pain: rule out ACS. Exercise stress test if stable.",
-        "note":   "Non-specific ST/T changes. Not diagnostic alone — needs clinical context.",
+        "note":   "Non-specific ST/T changes. Not diagnostic alone -- needs clinical context.",
     },
     "NDT": {
         "action": "Non-diagnostic. Correlate clinically. Repeat ECG if symptoms change.",
@@ -173,7 +173,7 @@ CONF_THRESHOLD = 0.40   # sigmoid threshold for positive prediction
 # ---------------------------------------------------------------------------
 
 def extract_multilabel_vector(scp_codes_dict: dict, conf_threshold: float = 50.0) -> np.ndarray:
-    """Convert SCP code dict {code: likelihood} → 12-hot float32 vector."""
+    """Convert SCP code dict {code: likelihood} -> 12-hot float32 vector."""
     vec = np.zeros(N_ML_CLASSES, dtype=np.float32)
     for code, likelihood in scp_codes_dict.items():
         if likelihood >= conf_threshold and code in CODE_TO_IDX:
@@ -188,7 +188,7 @@ def extract_multilabel_vector(scp_codes_dict: dict, conf_threshold: float = 50.0
 def load_multilabel_dataset(base_path: str = "ekg_datasets/ptbxl"):
     """
     Load PTB-XL with 12-class multi-hot labels.
-    Returns: paths (list), label_matrix (np.ndarray N×12), folds (list[int])
+    Returns: paths (list), label_matrix (np.ndarray Nx12), folds (list[int])
     Only keeps records that have at least one of the 12 target codes.
     """
     base = Path(base_path)
@@ -279,7 +279,7 @@ def preload_signals(paths, demographics):
 
 
 def load_demographics(base_path="ekg_datasets/ptbxl"):
-    """Returns dict: path → (sex_raw, age) — same as cnn_classifier logic."""
+    """Returns dict: path -> (sex_raw, age) -- same as cnn_classifier logic."""
     base = Path(base_path)
     meta = pd.read_csv(base / "ptbxl_database.csv", index_col="ecg_id")
     demo = {}
@@ -365,7 +365,7 @@ def print_results(m, label="Val"):
     for i, code in enumerate(MULTILABEL_CODES):
         auroc = m["per_class_auroc"][i]
         f1    = m["per_class_f1"][i]
-        auroc_s = f"{auroc:.3f}" if not np.isnan(auroc) else "  —  "
+        auroc_s = f"{auroc:.3f}" if not np.isnan(auroc) else "  --  "
         print(f"  {code:<8} {auroc_s:>6}  {f1:>6.3f}")
 
 
@@ -578,7 +578,7 @@ def apply_patient_context(result: dict, patient_profile: dict) -> dict:
     def _prepend_note(code, text):
         if code in pc:
             existing = pc[code]["note"]
-            pc[code]["note"] = text + (" — " + existing if existing else "")
+            pc[code]["note"] = text + (" -- " + existing if existing else "")
 
     def _prepend_action(code, text):
         if code in pc:
@@ -593,64 +593,64 @@ def apply_patient_context(result: dict, patient_profile: dict) -> dict:
         if code in pc:
             pc[code]["action"] = text
 
-    # ── Pacemaker ──────────────────────────────────────────────────────────
+    # -- Pacemaker ------------------------------------------------------------
     if pacemaker:
-        pacemaker_warn = "⚠ Pacemaker present — compare with pre-pacemaker ECG."
+        pacemaker_warn = "Pacemaker present -- compare with pre-pacemaker ECG."
         for code in ("CLBBB", "CRBBB"):
             _prepend_note(code, pacemaker_warn + " Pacing morphology may mimic bundle branch block.")
         for code in ("LAFB", "1AVB", "IRBBB"):
             _prepend_note(code, pacemaker_warn + " Conduction findings may reflect pacing.")
 
-    # ── Athlete ─────────────────────────────────────────────────────────────
+    # -- Athlete --------------------------------------------------------------
     if athlete:
         _prepend_note("LVH",
             "Athlete: voltage criteria may reflect physiologic cardiac remodeling (athletic heart). "
             "Echo needed to differentiate from HCM.")
         _replace_note("IRBBB",
-            "Athlete: IRBBB is a common normal variant — likely benign in this context.")
+            "Athlete: IRBBB is a common normal variant -- likely benign in this context.")
         _prepend_note("CRBBB",
-            "Athlete: isolated RBBB is more prevalent in trained athletes — likely benign if no other findings.")
+            "Athlete: isolated RBBB is more prevalent in trained athletes -- likely benign if no other findings.")
         _prepend_note("STACH",
-            "Athlete: verify resting HR baseline — trained athletes can have variable heart rates.")
+            "Athlete: verify resting HR baseline -- trained athletes can have variable heart rates.")
 
-    # ── Potassium ───────────────────────────────────────────────────────────
+    # -- Potassium ------------------------------------------------------------
     if k < 3.5:
         hypo_tag = f"Hypokalemia (K+={k:.1f} mEq/L): "
         _prepend_note("NDT",  hypo_tag + "T-wave changes may be electrolyte-related. Treat and repeat ECG.")
         _prepend_note("ISC_", hypo_tag + "ST-T changes may be electrolyte-related. Treat and repeat ECG.")
         _prepend_note("PVC",  hypo_tag + "Hypokalemia increases ectopy risk. Replete potassium urgently.")
     elif k > 5.5:
-        hyper_tag = f"Hyperkalemia (K+={k:.1f} mEq/L) — electrolyte emergency: "
+        hyper_tag = f"Hyperkalemia (K+={k:.1f} mEq/L) -- electrolyte emergency: "
         _prepend_note("NDT",   hyper_tag + "Peaked T-waves are an early sign. Monitor QRS width closely.")
         _prepend_note("ISC_",  hyper_tag + "ST changes may be electrolyte-related.")
         _prepend_note("PVC",   hyper_tag + "Arrhythmia risk elevated. Urgent correction needed.")
         for code in ("CLBBB", "CRBBB", "IRBBB"):
             _prepend_note(code, hyper_tag + "Wide QRS may reflect hyperkalemia-induced conduction delay, not true BBB.")
 
-    # ── Age-specific ─────────────────────────────────────────────────────────
+    # -- Age-specific ---------------------------------------------------------
     if age < 40 and pc.get("LVH", {}).get("detected"):
         _prepend_note("LVH",
             f"Young patient (age {age}): consider hypertrophic cardiomyopathy (HCM). "
-            "Echo essential — screen first-degree relatives.")
+            "Echo essential -- screen first-degree relatives.")
 
     if age > 75 and pc.get("CLBBB", {}).get("detected"):
         _prepend_note("CLBBB",
             f"Elderly patient (age {age}): higher pre-test probability of ischemic etiology. "
             "If new LBBB and chest pain, treat as STEMI-equivalent.")
 
-    # ── Pregnancy ──────────────────────────────────────────────────────────
+    # -- Pregnancy ------------------------------------------------------------
     if pregnant:
         _replace_action("STACH",
             "Pregnancy: HR up to 110 bpm is normal. Investigate if >120 or symptomatic (rule out PE, sepsis, PPH).")
         _prepend_note("LVH",
-            "Pregnancy-related volume overload can cause voltage changes — reassess postpartum.")
+            "Pregnancy-related volume overload can cause voltage changes -- reassess postpartum.")
         _prepend_note("1AVB",
-            "Mild PR prolongation can occur in normal pregnancy — monitor for progression.")
+            "Mild PR prolongation can occur in normal pregnancy -- monitor for progression.")
 
-    # ── Sex-specific Cornell note ─────────────────────────────────────────
+    # -- Sex-specific Cornell note --------------------------------------------
     if sex == "F" and pc.get("LVH", {}).get("detected"):
         _prepend_note("LVH",
-            "Female: Cornell threshold is lower (>=2.0 mV vs 2.8 mV in males) — criterion may be met at lower voltages.")
+            "Female: Cornell threshold is lower (>=2.0 mV vs 2.8 mV in males) -- criterion may be met at lower voltages.")
 
     return result
 

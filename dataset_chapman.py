@@ -12,21 +12,21 @@ Dataset facts:
   - PhysioNet: physionet.org/content/ecg-arrhythmia/1.0.0/
 
 Key conditions well-represented (vs PTB-XL gaps):
-  AFIB  : 3,889  ← primary reason to use this dataset
+  AFIB  : 3,889  <- primary reason to use this dataset
   GSVT  :   869  supraventricular tachycardia
   SB    : 3,889  sinus bradycardia
   ST    : 2,760  sinus tachycardia
 
-SNOMED-CT → our label mapping:
-  164889003 → AFIB   Atrial fibrillation
-  426783006 → NORM   Sinus rhythm (normal)
-  426177001 → NORM   Sinus bradycardia (normal rhythm, just slow)
-  427084000 → STACH  Sinus tachycardia  [new label added here]
-  713422000 → CRBBB  Complete right bundle branch block
-  164909002 → CLBBB  Complete left bundle branch block
-  164884008 → PVC    Premature ventricular complex
-  59118001  → CRBBB  Right bundle branch block (generic)
-  164909002 → CLBBB  Left bundle branch block (generic)
+SNOMED-CT -> our label mapping:
+  164889003 -> AFIB   Atrial fibrillation
+  426783006 -> NORM   Sinus rhythm (normal)
+  426177001 -> NORM   Sinus bradycardia (normal rhythm, just slow)
+  427084000 -> STACH  Sinus tachycardia  [new label added here]
+  713422000 -> CRBBB  Complete right bundle branch block
+  164909002 -> CLBBB  Complete left bundle branch block
+  164884008 -> PVC    Premature ventricular complex
+  59118001  -> CRBBB  Right bundle branch block (generic)
+  164909002 -> CLBBB  Left bundle branch block (generic)
 
 Usage:
     python dataset_chapman.py --download    # download dataset (~20 GB)
@@ -35,7 +35,7 @@ Usage:
 
     # From multilabel_classifier.py:
     from dataset_chapman import load_chapman_multilabel
-    paths_c, labels_c = load_chapman_multilabel()   # returns (paths, N×13 matrix)
+    paths_c, labels_c = load_chapman_multilabel()   # returns (paths, Nx13 matrix)
 """
 
 import ast
@@ -50,7 +50,7 @@ CHAPMAN_BASE      = "ekg_datasets/chapman"
 CHAPMAN_INDEX     = "ekg_datasets/chapman_index.csv"
 PHYSIONET_BASE    = "https://physionet.org/files/ecg-arrhythmia/1.0.0"
 
-# SNOMED-CT code → our multi-label code
+# SNOMED-CT code -> our multi-label code
 # Only map codes that appear in our label set (or AFIB which we add)
 SNOMED_TO_LABEL = {
     "164889003": "AFIB",   # Atrial fibrillation
@@ -68,13 +68,13 @@ SNOMED_TO_LABEL = {
     "55930002":  "ISC_",   # ST depression (ischemic)
     "164931005": "LVH",    # Left ventricular hypertrophy
     "67751000119106": "LVH",  # LVH (alt code)
-    "427084000": "STACH",  # Sinus tachycardia  ← new label (rich in Chapman)
+    "427084000": "STACH",  # Sinus tachycardia  <- new label (rich in Chapman)
 }
 
 # Our 13-label set for the merged model (adds AFIB + STACH to the 12-class PTB-XL set)
 MERGED_CODES = [
     "NORM",   # 0
-    "AFIB",   # 1  ← from Chapman-Shaoxing
+    "AFIB",   # 1  <- from Chapman-Shaoxing
     "PVC",    # 2
     "LVH",    # 3
     "IMI",    # 4
@@ -86,7 +86,7 @@ MERGED_CODES = [
     "ISC_",   # 10
     "NDT",    # 11
     "IRBBB",  # 12
-    "STACH",  # 13  ← from Chapman-Shaoxing (only 4 in PTB-XL, 2760 here)
+    "STACH",  # 13  <- from Chapman-Shaoxing (only 4 in PTB-XL, 2760 here)
 ]
 MERGED_CODE_TO_IDX = {c: i for i, c in enumerate(MERGED_CODES)}
 N_MERGED = len(MERGED_CODES)
@@ -107,7 +107,7 @@ def download_chapman(base_path: str = CHAPMAN_BASE):
     base = Path(base_path)
     base.mkdir(parents=True, exist_ok=True)
     print(f"Downloading Chapman-Shaoxing to {base_path} ...")
-    print("This takes 30–60 minutes depending on connection speed.")
+    print("This takes 30-60 minutes depending on connection speed.")
 
     session = requests.Session()
     session.headers["User-Agent"] = "wfdb-python/4.3.1"
@@ -160,7 +160,7 @@ def download_chapman(base_path: str = CHAPMAN_BASE):
             try:
                 _download_file(url, dest)
             except Exception as e:
-                print(f"\n  WARN: {rec_path}{ext} — {e}")
+                print(f"\n  WARN: {rec_path}{ext} -- {e}")
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         futures = {pool.submit(_download_record, r): r for r in all_records}
@@ -198,7 +198,7 @@ def parse_snomed_codes(hea_path: str) -> list:
 
 
 def snomed_to_multilabel(snomed_codes: list) -> np.ndarray:
-    """Convert list of SNOMED codes → 14-hot vector (MERGED_CODES)."""
+    """Convert list of SNOMED codes -> 14-hot vector (MERGED_CODES)."""
     vec = np.zeros(N_MERGED, dtype=np.float32)
     for code in snomed_codes:
         label = SNOMED_TO_LABEL.get(code)
