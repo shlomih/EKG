@@ -265,7 +265,10 @@ def train(batch_size: int = 64, n_epochs: int = 60, patience: int = 12):
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
             marker = " <*>"
-            # Save checkpoint to Drive on every improvement (guards against session timeout)
+            # Save best model locally on every improvement
+            torch.save({"model_state": best_state, "best_auroc": best_auroc,
+                        "label_codes": MERGED_CODES, "n_classes": N_CLASSES}, MODEL_PATH)
+            # Also save to Drive if running on Colab
             drive_ckpt = "/content/drive/MyDrive/EKG_models/ecg_multilabel_v2_best.pt"
             if os.path.exists("/content/drive/MyDrive/EKG_models"):
                 torch.save({"model_state": best_state, "best_auroc": best_auroc,
