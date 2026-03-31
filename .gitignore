@@ -218,3 +218,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Logs and temp files
+install_log_*.txt
+models/thresholds_tuning_log.txt
+models/*.zip
+models/*.whl
+EKG.zip
