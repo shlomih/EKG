@@ -2,11 +2,12 @@
 tune_thresholds.py
 ==================
 Find optimal per-class classification thresholds using the validation set (fold 9).
-Saves thresholds to models/thresholds_v2.json and evaluates on test set (fold 10).
+Saves thresholds to models/thresholds_v<N>.json and evaluates on test set (fold 10).
 
 Usage:
     python tune_thresholds.py                  # tune v2 model (14-class)
     python tune_thresholds.py --model v1       # tune v1 model (12-class)
+    python tune_thresholds.py --model v3       # tune v3 model (26-class)
 """
 import argparse
 import json
@@ -77,7 +78,14 @@ def run(model_version="v2"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    if model_version == "v2":
+    if model_version == "v3":
+        from multilabel_v3 import V3ECGDataset, load_v3_data
+        from dataset_challenge import V3_CODES, N_V3
+        model_path   = "models/ecg_multilabel_v3.pt"
+        thresh_path  = "models/thresholds_v3.json"
+        codes        = V3_CODES
+        n_classes    = N_V3
+    elif model_version == "v2":
         model_path   = "models/ecg_multilabel_v2.pt"
         thresh_path  = "models/thresholds_v2.json"
         codes        = MERGED_CODES
@@ -98,7 +106,10 @@ def run(model_version="v2"):
     print(f"Loaded: {model_path}  (best AUROC={ckpt.get('best_auroc', '?'):.3f})")
 
     print("\nLoading data...")
-    all_paths, all_labels, all_folds = load_merged_data()
+    if model_version == "v3":
+        all_paths, all_labels, all_folds = load_v3_data()
+    else:
+        all_paths, all_labels, all_folds = load_merged_data()
     all_folds = np.array(all_folds)
 
     val_mask  = all_folds == 9
@@ -112,8 +123,12 @@ def run(model_version="v2"):
     all_ptbxl = list(set(val_paths + test_paths))
     raw_cache, aux_cache = preload_signals(all_ptbxl, demographics)
 
-    val_ds  = MergedECGDataset(val_paths,  val_labels,  raw_cache, aux_cache, demographics)
-    test_ds = MergedECGDataset(test_paths, test_labels, raw_cache, aux_cache, demographics)
+    if model_version == "v3":
+        val_ds  = V3ECGDataset(val_paths,  val_labels,  raw_cache, aux_cache)
+        test_ds = V3ECGDataset(test_paths, test_labels, raw_cache, aux_cache)
+    else:
+        val_ds  = MergedECGDataset(val_paths,  val_labels,  raw_cache, aux_cache, demographics)
+        test_ds = MergedECGDataset(test_paths, test_labels, raw_cache, aux_cache, demographics)
     val_loader  = DataLoader(val_ds,  batch_size=256, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=256, shuffle=False, num_workers=0)
 
@@ -151,6 +166,6 @@ def run(model_version="v2"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="v2", choices=["v1", "v2"])
+    parser.add_argument("--model", default="v2", choices=["v1", "v2", "v3"])
     args = parser.parse_args()
     run(args.model)
