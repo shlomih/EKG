@@ -163,18 +163,29 @@ def load_v3_data():
     chap_folds = np.zeros(N_chap, dtype=int)
 
     # Challenge (already 26-class aligned)
+    # Reserve 10% as test (fold 20), 5% as val (fold 19), rest as train (fold 0)
     print("Loading Challenge datasets...")
     chal_paths, chal_labels26 = load_challenge_multilabel(codes=V3_CODES)
     N_chal = len(chal_paths)
+    rng = np.random.default_rng(42)
+    perm = rng.permutation(N_chal)
+    n_test = int(N_chal * 0.10)
+    n_val  = int(N_chal * 0.05)
     chal_folds = np.zeros(N_chal, dtype=int)
+    chal_folds[perm[:n_test]]           = 20   # challenge test
+    chal_folds[perm[n_test:n_test+n_val]] = 19  # challenge val
 
     # Merge all
     all_paths  = ptb_paths + chap_paths + chal_paths
     all_labels = np.concatenate([ptb_labels26, chap_labels26, chal_labels26], axis=0)
     all_folds  = np.concatenate([ptb_folds, chap_folds, chal_folds], axis=0)
 
+    n_chal_train = int((chal_folds == 0).sum())
+    n_chal_val   = int((chal_folds == 19).sum())
+    n_chal_test  = int((chal_folds == 20).sum())
     print(f"  V3 dataset: {N_ptb} PTB-XL + {N_chap} Chapman + {N_chal} Challenge"
           f" = {len(all_paths)} total")
+    print(f"  Challenge split: {n_chal_train} train / {n_chal_val} val / {n_chal_test} test")
     print(f"  Per-class positives:")
     for i, code in enumerate(V3_CODES):
         n = int(all_labels[:, i].sum())
@@ -197,18 +208,22 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
 
     all_paths, all_labels, all_folds = load_v3_data()
 
-    train_mask = all_folds <= 8
-    val_mask   = all_folds == 9
-    test_mask  = all_folds == 10
+    train_mask  = (all_folds <= 8) | (all_folds == 0)
+    val_mask    = all_folds == 9
+    test_mask   = all_folds == 10
+    ctest_mask  = all_folds == 20
 
-    train_paths  = [p for p, m in zip(all_paths, train_mask) if m]
-    val_paths    = [p for p, m in zip(all_paths, val_mask)   if m]
-    test_paths   = [p for p, m in zip(all_paths, test_mask)  if m]
-    train_labels = all_labels[train_mask]
-    val_labels   = all_labels[val_mask]
-    test_labels  = all_labels[test_mask]
+    train_paths   = [p for p, m in zip(all_paths, train_mask) if m]
+    val_paths     = [p for p, m in zip(all_paths, val_mask)   if m]
+    test_paths    = [p for p, m in zip(all_paths, test_mask)  if m]
+    ctest_paths   = [p for p, m in zip(all_paths, ctest_mask) if m]
+    train_labels  = all_labels[train_mask]
+    val_labels    = all_labels[val_mask]
+    test_labels   = all_labels[test_mask]
+    ctest_labels  = all_labels[ctest_mask]
 
-    print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}")
+    print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}"
+          f" | Challenge-test: {len(ctest_paths)}")
 
     # Preload PTB-XL only; Chapman + Challenge load lazily
     print("  Pre-loading PTB-XL signals into RAM...")
@@ -218,13 +233,15 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
     raw_cache, aux_cache = preload_signals(ptbxl_paths, demographics)
     print(f"  Cached {len(raw_cache)} PTB-XL signals.")
 
-    train_ds = V3ECGDataset(train_paths, train_labels, raw_cache, aux_cache, augment=True)
-    val_ds   = V3ECGDataset(val_paths,   val_labels,   raw_cache, aux_cache, augment=False)
-    test_ds  = V3ECGDataset(test_paths,  test_labels,  raw_cache, aux_cache, augment=False)
+    train_ds  = V3ECGDataset(train_paths,  train_labels,  raw_cache, aux_cache, augment=True)
+    val_ds    = V3ECGDataset(val_paths,    val_labels,    raw_cache, aux_cache, augment=False)
+    test_ds   = V3ECGDataset(test_paths,   test_labels,   raw_cache, aux_cache, augment=False)
+    ctest_ds  = V3ECGDataset(ctest_paths,  ctest_labels,  raw_cache, aux_cache, augment=False)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=0)
+    train_loader  = DataLoader(train_ds,  batch_size=batch_size, shuffle=True,  num_workers=0)
+    val_loader    = DataLoader(val_ds,    batch_size=batch_size, shuffle=False, num_workers=0)
+    test_loader   = DataLoader(test_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
+    ctest_loader  = DataLoader(ctest_ds,  batch_size=batch_size, shuffle=False, num_workers=0)
 
     model = ECGNetJoint(n_leads=N_LEADS, n_classes=N_CLASSES, n_aux=N_AUX).to(device)
 
@@ -312,10 +329,11 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
                 "best_auroc": best_auroc, "label_codes": V3_CODES,
                 "n_classes": N_CLASSES}, MODEL_PATH)
     print(f"\n  Saved: {MODEL_PATH}")
-    _print_results(model, test_loader, device)
+    _print_results(model, test_loader,  device, title="PTB-XL fold 10 (14 original classes)")
+    _print_results(model, ctest_loader, device, title="Challenge test set (all 26 classes)")
 
 
-def _print_results(model, loader, device):
+def _print_results(model, loader, device, title="Test Results"):
     model.eval()
     all_probs, all_labels = [], []
     with torch.no_grad():
@@ -341,11 +359,11 @@ def _print_results(model, loader, device):
     new_codes = set(V3_CODES) - set(MERGED_CODES)
 
     print(f"\n{'=' * 60}")
-    print(f"  V3 Model - Test Results (PTB-XL fold 10)")
+    print(f"  V3 Model - {title}")
     print(f"{'=' * 60}")
-    print(f"  MacroF1   : {macro_f1:.3f}   (v2 baseline: 0.628 tuned)")
+    print(f"  MacroF1   : {macro_f1:.3f}")
     print(f"  MicroF1   : {micro_f1:.3f}")
-    print(f"  MacroAUROC: {macro_auroc:.3f}  (v2 baseline: 0.970)")
+    print(f"  MacroAUROC: {macro_auroc:.3f}")
     print(f"\n  Per-class ([NEW] = added in v3):")
     for i, code in enumerate(V3_CODES):
         tag   = " [NEW]" if code in new_codes else "      "
@@ -361,15 +379,26 @@ def eval_saved():
     model.load_state_dict(ckpt["model_state"])
 
     all_paths, all_labels, all_folds = load_v3_data()
-    test_mask   = np.array(all_folds) == 10
-    test_paths  = [p for p, m in zip(all_paths, test_mask) if m]
-    test_labels = all_labels[test_mask]
+    all_folds = np.array(all_folds)
+
+    test_mask   = all_folds == 10
+    ctest_mask  = all_folds == 20
+    test_paths   = [p for p, m in zip(all_paths, test_mask)  if m]
+    ctest_paths  = [p for p, m in zip(all_paths, ctest_mask) if m]
+    test_labels  = all_labels[test_mask]
+    ctest_labels = all_labels[ctest_mask]
 
     demographics = load_demographics()
-    raw_cache, aux_cache = preload_signals(test_paths, demographics)
-    test_ds     = V3ECGDataset(test_paths, test_labels, raw_cache, aux_cache)
-    test_loader = DataLoader(test_ds, batch_size=128, shuffle=False, num_workers=0)
-    _print_results(model, test_loader, device)
+    ptbxl_paths  = [p for p in test_paths if "ptbxl" in p.lower()]
+    raw_cache, aux_cache = preload_signals(ptbxl_paths, demographics)
+
+    test_ds    = V3ECGDataset(test_paths,  test_labels,  raw_cache, aux_cache)
+    ctest_ds   = V3ECGDataset(ctest_paths, ctest_labels, raw_cache, aux_cache)
+    test_loader  = DataLoader(test_ds,  batch_size=128, shuffle=False, num_workers=0)
+    ctest_loader = DataLoader(ctest_ds, batch_size=128, shuffle=False, num_workers=0)
+
+    _print_results(model, test_loader,  device, title="PTB-XL fold 10 (14 original classes)")
+    _print_results(model, ctest_loader, device, title="Challenge test set (all 26 classes)")
 
 
 if __name__ == "__main__":
