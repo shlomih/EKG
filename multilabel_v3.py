@@ -4,6 +4,8 @@ multilabel_v3.py
 Train 26-class multi-label ECG classifier.
 Builds on the 14-class v2 model by adding 12 new conditions from PhysioNet 2021 Challenge.
 
+Supports: GPU (CUDA), TPU (torch_xla), and CPU — auto-detected at runtime.
+
 Label set (26 classes, V3_CODES from dataset_challenge.py):
   From PTB-XL+Chapman (14): NORM, AFIB, PVC, LVH, IMI, ASMI, CLBBB, CRBBB, LAFB,
                              1AVB, ISC_, NDT, IRBBB, STACH
@@ -17,9 +19,10 @@ Data sources:
   Total      : ~111,756 records
 
 Usage:
-    python multilabel_v3.py               # train from v2 checkpoint
+    python multilabel_v3.py               # train from v2 checkpoint (GPU/TPU auto)
     python multilabel_v3.py --scratch     # train from random init
     python multilabel_v3.py --eval        # eval saved v3 model
+    python multilabel_v3.py --batch_size 256  # override batch size (default: 256 TPU, 64 GPU)
 """
 
 import argparse
@@ -36,6 +39,30 @@ from sklearn.metrics import roc_auc_score, f1_score, precision_recall_fscore_sup
 
 warnings.filterwarnings("ignore")
 os.chdir(Path(__file__).parent)
+
+# -- TPU / XLA support (optional) ---------------------------------------------
+_HAS_XLA = False
+try:
+    import torch_xla.core.xla_model as xm
+    from torch_xla.distributed.parallel_loader import MpDeviceLoader
+    _HAS_XLA = True
+except ImportError:
+    pass
+
+
+def _get_device():
+    """Auto-detect best available device: TPU > GPU > CPU."""
+    if _HAS_XLA:
+        dev = xm.xla_device()
+        print(f"  Device: TPU ({dev})")
+        return dev, "tpu"
+    if torch.cuda.is_available():
+        dev = torch.device("cuda")
+        print(f"  Device: GPU ({torch.cuda.get_device_name(0)})")
+        return dev, "gpu"
+    dev = torch.device("cpu")
+    print("  Device: CPU (training will be slow)")
+    return dev, "cpu"
 
 from cnn_classifier import (
     N_AUX, SIGNAL_LEN, N_LEADS,
@@ -72,19 +99,22 @@ MERGED_TO_V3 = np.array([
 # -- Evaluate ------------------------------------------------------------------
 def evaluate(model, loader, device, criterion=None):
     model.eval()
+    mdtype = next(model.parameters()).dtype  # bfloat16 on TPU, float32 otherwise
     all_logits, all_labels = [], []
     total_loss = 0.0
     n_batches  = 0
 
     with torch.no_grad():
         for sig, aux, lbl in loader:
-            sig, aux, lbl = sig.to(device), aux.to(device), lbl.to(device)
+            sig = sig.to(device=device, dtype=mdtype)
+            aux = aux.to(device=device, dtype=mdtype)
+            lbl = lbl.to(device=device, dtype=mdtype)
             logits = model(sig, aux)
             if criterion is not None:
                 total_loss += criterion(logits, lbl).item()
                 n_batches  += 1
-            all_logits.append(logits.cpu().numpy())
-            all_labels.append(lbl.cpu().numpy())
+            all_logits.append(logits.float().detach().cpu().numpy())
+            all_labels.append(lbl.float().detach().cpu().numpy())
 
     logits_np = np.vstack(all_logits)
     labels_np = np.vstack(all_labels)
@@ -197,14 +227,24 @@ def load_v3_data():
 
 
 # -- Training ------------------------------------------------------------------
-def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
+def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     print("\n" + "=" * 60)
     print("  V3 Multi-Label ECG Classifier  (26 conditions)")
     print("  PTB-XL + Chapman + PhysioNet 2021 Challenge")
     print("=" * 60)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"  Device: {device}")
+    device, dev_type = _get_device()
+    is_tpu = (dev_type == "tpu")
+
+    # Default batch size: 256 for TPU (single v6e core), 64 for GPU/CPU
+    if batch_size is None:
+        batch_size = 256 if is_tpu else 64
+    print(f"  Batch size: {batch_size}")
+
+    # Scale learning rate with batch size (linear scaling rule, base=64)
+    base_lr = 3e-4
+    lr = base_lr * (batch_size / 64)
+    print(f"  Learning rate: {lr:.1e} (scaled from {base_lr:.1e})")
 
     all_paths, all_labels, all_folds = load_v3_data()
 
@@ -238,22 +278,41 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
     test_ds   = V3ECGDataset(test_paths,   test_labels,   raw_cache, aux_cache, augment=False)
     ctest_ds  = V3ECGDataset(ctest_paths,  ctest_labels,  raw_cache, aux_cache, augment=False)
 
-    train_loader  = DataLoader(train_ds,  batch_size=batch_size, shuffle=True,  num_workers=0)
-    val_loader    = DataLoader(val_ds,    batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader   = DataLoader(test_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
-    ctest_loader  = DataLoader(ctest_ds,  batch_size=batch_size, shuffle=False, num_workers=0)
+    # DataLoader config — TPU needs drop_last=True to avoid XLA recompilation
+    # on a smaller final batch, and num_workers>0 for CPU-side prefetch
+    dl_workers = 2 if is_tpu else 0
+    train_loader  = DataLoader(train_ds,  batch_size=batch_size, shuffle=True,
+                               num_workers=dl_workers, drop_last=is_tpu)
+    val_loader    = DataLoader(val_ds,    batch_size=batch_size, shuffle=False,
+                               num_workers=dl_workers, drop_last=False)
+    test_loader   = DataLoader(test_ds,   batch_size=batch_size, shuffle=False,
+                               num_workers=dl_workers, drop_last=False)
+    ctest_loader  = DataLoader(ctest_ds,  batch_size=batch_size, shuffle=False,
+                               num_workers=dl_workers, drop_last=False)
+
+    # Wrap loaders with MpDeviceLoader for async CPU→TPU data transfer
+    if is_tpu:
+        train_loader = MpDeviceLoader(train_loader, device)
+        val_loader   = MpDeviceLoader(val_loader, device)
+        test_loader  = MpDeviceLoader(test_loader, device)
+        ctest_loader = MpDeviceLoader(ctest_loader, device)
 
     model = ECGNetJoint(n_leads=N_LEADS, n_classes=N_CLASSES, n_aux=N_AUX).to(device)
 
+    # Use bfloat16 on TPU for native hardware acceleration
+    if is_tpu:
+        model = model.to(torch.bfloat16)
+        print("  Using bfloat16 precision (TPU native)")
+
     # Transfer weights from v2 model (14-class -> 26-class)
     if not from_scratch and os.path.exists(V2_MODEL_PATH):
-        v2_ckpt = torch.load(V2_MODEL_PATH, map_location=device, weights_only=False)
+        v2_ckpt = torch.load(V2_MODEL_PATH, map_location="cpu", weights_only=False)
         v2_state = v2_ckpt["model_state"]
         v3_state = model.state_dict()
         transferred = 0
         for k, v in v2_state.items():
             if k in v3_state and v3_state[k].shape == v.shape:
-                v3_state[k] = v
+                v3_state[k] = v.to(v3_state[k].dtype)
                 transferred += 1
         model.load_state_dict(v3_state)
         print(f"  Transferred {transferred}/{len(v3_state)} layers from v2 model "
@@ -265,10 +324,12 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
     print(f"  Model params: {n_params/1e6:.1f}M  ({N_CLASSES} output classes)")
 
     pos_weight = compute_pos_weights(train_labels).to(device)
+    if is_tpu:
+        pos_weight = pos_weight.to(torch.bfloat16)
     criterion  = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer  = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    optimizer  = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler  = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=3e-4,
+        optimizer, max_lr=lr,
         steps_per_epoch=len(train_loader),
         epochs=n_epochs, pct_start=0.1,
     )
@@ -277,6 +338,9 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
     best_state = None
     no_improve = 0
 
+    if is_tpu:
+        print("\n  [NOTE] First epoch is slow due to XLA graph compilation — this is normal!")
+
     print(f"\n  {'Ep':>3}  {'Loss':>7}  {'ValAUROC':>8}  {'ValF1':>7}")
     print("  " + "-" * 35)
 
@@ -284,31 +348,48 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
         model.train()
         t0 = time.time()
         total_loss = 0.0
+        n_samples  = 0
         for sig, aux, lbl in train_loader:
-            sig, aux, lbl = sig.to(device), aux.to(device), lbl.to(device)
+            if not is_tpu:
+                sig, aux, lbl = sig.to(device), aux.to(device), lbl.to(device)
+            if is_tpu:
+                sig = sig.to(torch.bfloat16)
+                aux = aux.to(torch.bfloat16)
+                lbl = lbl.to(torch.bfloat16)
             optimizer.zero_grad()
             loss = criterion(model(sig, aux), lbl)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            if is_tpu:
+                xm.optimizer_step(optimizer)
+                xm.mark_step()
+            else:
+                optimizer.step()
             scheduler.step()
-            total_loss += loss.item() * len(sig)
+            total_loss += loss.item() * sig.size(0)
+            n_samples  += sig.size(0)
 
         m = evaluate(model, val_loader, device, criterion)
         improved = m["macro_auroc"] > best_auroc
         if improved:
             best_auroc = m["macro_auroc"]
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.cpu().clone().float() for k, v in model.state_dict().items()}
             no_improve = 0
             marker = " <*>"
             # Save locally on every improvement
-            torch.save({"model_state": best_state, "best_auroc": best_auroc,
-                        "label_codes": V3_CODES, "n_classes": N_CLASSES}, MODEL_PATH)
+            _save_ckpt = {"model_state": best_state, "best_auroc": best_auroc,
+                          "label_codes": V3_CODES, "n_classes": N_CLASSES}
+            if is_tpu:
+                xm.save(_save_ckpt, MODEL_PATH)
+            else:
+                torch.save(_save_ckpt, MODEL_PATH)
             # Save to Drive if on Colab
             drive_ckpt = "/content/drive/MyDrive/EKG_models/ecg_multilabel_v3_best.pt"
             if os.path.exists("/content/drive/MyDrive/EKG_models"):
-                torch.save({"model_state": best_state, "best_auroc": best_auroc,
-                            "label_codes": V3_CODES, "n_classes": N_CLASSES}, drive_ckpt)
+                if is_tpu:
+                    xm.save(_save_ckpt, drive_ckpt)
+                else:
+                    torch.save(_save_ckpt, drive_ckpt)
                 print(f"  Checkpoint saved to Drive (AUROC={best_auroc:.3f})", flush=True)
         else:
             no_improve += 1
@@ -325,9 +406,15 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
     # Final test evaluation
     if best_state:
         model.load_state_dict(best_state)
-    torch.save({"model_state": best_state or model.state_dict(),
-                "best_auroc": best_auroc, "label_codes": V3_CODES,
-                "n_classes": N_CLASSES}, MODEL_PATH)
+        model = model.to(device)
+    _final_ckpt = {"model_state": best_state or {k: v.cpu().clone().float()
+                   for k, v in model.state_dict().items()},
+                   "best_auroc": best_auroc, "label_codes": V3_CODES,
+                   "n_classes": N_CLASSES}
+    if is_tpu:
+        xm.save(_final_ckpt, MODEL_PATH)
+    else:
+        torch.save(_final_ckpt, MODEL_PATH)
     print(f"\n  Saved: {MODEL_PATH}")
     _print_results(model, test_loader,  device, title="PTB-XL fold 10 (14 original classes)")
     _print_results(model, ctest_loader, device, title="Challenge test set (all 26 classes)")
@@ -335,12 +422,15 @@ def train(batch_size=64, n_epochs=60, patience=12, from_scratch=False):
 
 def _print_results(model, loader, device, title="Test Results"):
     model.eval()
+    mdtype = next(model.parameters()).dtype  # bfloat16 on TPU, float32 otherwise
     all_probs, all_labels = [], []
     with torch.no_grad():
         for sig, aux, lbl in loader:
-            logits = model(sig.to(device), aux.to(device))
-            all_probs.append(torch.sigmoid(logits).cpu().numpy())
-            all_labels.append(lbl.numpy())
+            sig = sig.to(device=device, dtype=mdtype)
+            aux = aux.to(device=device, dtype=mdtype)
+            logits = model(sig, aux)
+            all_probs.append(torch.sigmoid(logits.float()).detach().cpu().numpy())
+            all_labels.append(lbl.detach().cpu().numpy())
     probs  = np.concatenate(all_probs,  axis=0)
     labels = np.concatenate(all_labels, axis=0).astype(int)
     preds  = (probs >= 0.5).astype(int)
@@ -373,8 +463,8 @@ def _print_results(model, loader, device, title="Test Results"):
 
 
 def eval_saved():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt   = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+    device, dev_type = _get_device()
+    ckpt   = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
     model  = ECGNetJoint(n_leads=N_LEADS, n_classes=N_CLASSES, n_aux=N_AUX).to(device)
     model.load_state_dict(ckpt["model_state"])
 
@@ -405,9 +495,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval",    action="store_true", help="Evaluate saved model only")
     parser.add_argument("--scratch", action="store_true", help="Train from random init (no v2 transfer)")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Override batch size (default: 256 TPU, 64 GPU)")
     args = parser.parse_args()
 
     if args.eval:
         eval_saved()
     else:
-        train(from_scratch=args.scratch)
+        train(batch_size=args.batch_size, from_scratch=args.scratch)
