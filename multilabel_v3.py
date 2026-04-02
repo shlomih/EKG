@@ -384,8 +384,8 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
             else:
                 torch.save(_save_ckpt, MODEL_PATH)
             # Save to Drive if on Colab
-            drive_ckpt = "/content/drive/MyDrive/EKG_models/ecg_multilabel_v3_best.pt"
-            if os.path.exists("/content/drive/MyDrive/EKG_models"):
+            drive_ckpt = "/content/drive/MyDrive/EKG/ecg_multilabel_v3_best.pt"
+            if os.path.exists("/content/drive/MyDrive/EKG"):
                 if is_tpu:
                     xm.save(_save_ckpt, drive_ckpt)
                 else:
