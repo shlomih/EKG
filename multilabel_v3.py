@@ -43,6 +43,7 @@ os.chdir(Path(__file__).parent)
 # -- TPU / XLA support (optional) ---------------------------------------------
 _HAS_XLA = False
 try:
+    import torch_xla
     import torch_xla.core.xla_model as xm
     from torch_xla.distributed.parallel_loader import MpDeviceLoader
     _HAS_XLA = True
@@ -53,7 +54,7 @@ except ImportError:
 def _get_device():
     """Auto-detect best available device: TPU > GPU > CPU."""
     if _HAS_XLA:
-        dev = xm.xla_device()
+        dev = torch_xla.device()
         print(f"  Device: TPU ({dev})")
         return dev, "tpu"
     if torch.cuda.is_available():
@@ -249,7 +250,9 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     all_paths, all_labels, all_folds = load_v3_data()
 
     train_mask  = (all_folds <= 8) | (all_folds == 0)
-    val_mask    = all_folds == 9
+    # Mixed val: PTB-XL fold 9 + Challenge fold 19
+    # This ensures early stopping sees all 26 classes (new classes only exist in Challenge)
+    val_mask    = (all_folds == 9) | (all_folds == 19)
     test_mask   = all_folds == 10
     ctest_mask  = all_folds == 20
 
@@ -384,8 +387,8 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
             else:
                 torch.save(_save_ckpt, MODEL_PATH)
             # Save to Drive if on Colab
-            drive_ckpt = "/content/drive/MyDrive/EKG/ecg_multilabel_v3_best.pt"
-            if os.path.exists("/content/drive/MyDrive/EKG"):
+            drive_ckpt = "/content/drive/MyDrive/EKG/models/ecg_multilabel_v3_best.pt"
+            if os.path.exists("/content/drive/MyDrive/EKG/models"):
                 if is_tpu:
                     xm.save(_save_ckpt, drive_ckpt)
                 else:
