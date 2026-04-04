@@ -157,7 +157,7 @@ def load_challenge_multilabel(
                 ds_skip_lbl += 1
                 continue
 
-            ds_paths.append(str(mat_path))
+            ds_paths.append(str(mat_path.with_suffix('')))
             ds_labels.append(row)
 
         n_kept = len(ds_paths)
