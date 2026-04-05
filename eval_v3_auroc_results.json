@@ -1,0 +1,569 @@
+{
+  "ptbxl_test": {
+    "macro_auroc": 0.970028780038986,
+    "macro_f1": 0.334907132674824,
+    "micro_f1": 0.7552210724365005,
+    "per_class": {
+      "NORM": {
+        "auroc": 0.9557231325168267,
+        "f1": 0.8934599156118144,
+        "threshold": 0.8261843323707581,
+        "n_pos": 954,
+        "is_new": false
+      },
+      "AFIB": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.8454486131668091,
+        "n_pos": 0,
+        "is_new": false
+      },
+      "PVC": {
+        "auroc": 0.9883592278719397,
+        "f1": 0.7894736842105263,
+        "threshold": 0.9,
+        "n_pos": 96,
+        "is_new": false
+      },
+      "LVH": {
+        "auroc": 0.9546751496054564,
+        "f1": 0.6764705882352942,
+        "threshold": 0.7176550626754761,
+        "n_pos": 177,
+        "is_new": false
+      },
+      "IMI": {
+        "auroc": 0.9469122243811777,
+        "f1": 0.6355555555555555,
+        "threshold": 0.9,
+        "n_pos": 175,
+        "is_new": false
+      },
+      "ASMI": {
+        "auroc": 0.9791070635821043,
+        "f1": 0.7631578947368421,
+        "threshold": 0.9,
+        "n_pos": 194,
+        "is_new": false
+      },
+      "CLBBB": {
+        "auroc": 0.9948491537895511,
+        "f1": 0.9174311926605505,
+        "threshold": 0.9,
+        "n_pos": 54,
+        "is_new": false
+      },
+      "CRBBB": {
+        "auroc": 0.9956974082250021,
+        "f1": 0.864,
+        "threshold": 0.9,
+        "n_pos": 54,
+        "is_new": false
+      },
+      "LAFB": {
+        "auroc": 0.9827095287776039,
+        "f1": 0.7467532467532467,
+        "threshold": 0.85940021276474,
+        "n_pos": 162,
+        "is_new": false
+      },
+      "1AVB": {
+        "auroc": 0.9677771245209779,
+        "f1": 0.5294117647058824,
+        "threshold": 0.9,
+        "n_pos": 79,
+        "is_new": false
+      },
+      "ISC_": {
+        "auroc": 0.9692219864787112,
+        "f1": 0.6821705426356589,
+        "threshold": 0.9,
+        "n_pos": 128,
+        "is_new": false
+      },
+      "NDT": {
+        "auroc": 0.9341148756231892,
+        "f1": 0.5545286506469501,
+        "threshold": 0.9,
+        "n_pos": 182,
+        "is_new": false
+      },
+      "IRBBB": {
+        "auroc": 0.9711984850952924,
+        "f1": 0.6551724137931034,
+        "threshold": 0.9,
+        "n_pos": 112,
+        "is_new": false
+      },
+      "STACH": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.8778657913208008,
+        "n_pos": 0,
+        "is_new": false
+      },
+      "PAC": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.8777508735656738,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "Brady": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.7337468862533569,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "SVT": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "LQTP": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "TAb": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.7044786810874939,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "LAD": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.812285840511322,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "RAD": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.8935102224349976,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "NSIVC": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "AFL": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.8617351055145264,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "STc": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.8709754347801208,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "STD": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.894239068031311,
+        "n_pos": 0,
+        "is_new": true
+      },
+      "LAE": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": true
+      }
+    }
+  },
+  "challenge_test": {
+    "macro_auroc": 0.9433293322331185,
+    "macro_f1": 0.4674673157629888,
+    "micro_f1": 0.6844458471411288,
+    "per_class": {
+      "NORM": {
+        "auroc": 0.9241059655420366,
+        "f1": 0.8057285180572852,
+        "threshold": 0.8261843323707581,
+        "n_pos": 877,
+        "is_new": false
+      },
+      "AFIB": {
+        "auroc": 0.8753722349227967,
+        "f1": 0.26936026936026936,
+        "threshold": 0.8454486131668091,
+        "n_pos": 189,
+        "is_new": false
+      },
+      "PVC": {
+        "auroc": 0.9649511423155477,
+        "f1": 0.7372881355932204,
+        "threshold": 0.9,
+        "n_pos": 239,
+        "is_new": false
+      },
+      "LVH": {
+        "auroc": 0.9538763366678163,
+        "f1": 0.6979655712050078,
+        "threshold": 0.7176550626754761,
+        "n_pos": 624,
+        "is_new": false
+      },
+      "IMI": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": false
+      },
+      "ASMI": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": false
+      },
+      "CLBBB": {
+        "auroc": 0.973736743605739,
+        "f1": 0.7395498392282959,
+        "threshold": 0.9,
+        "n_pos": 275,
+        "is_new": false
+      },
+      "CRBBB": {
+        "auroc": 0.9869124242777261,
+        "f1": 0.8824343015214384,
+        "threshold": 0.9,
+        "n_pos": 348,
+        "is_new": false
+      },
+      "LAFB": {
+        "auroc": 0.8827555245283352,
+        "f1": 0.25684210526315787,
+        "threshold": 0.85940021276474,
+        "n_pos": 186,
+        "is_new": false
+      },
+      "1AVB": {
+        "auroc": 0.8734251968503938,
+        "f1": 0.010416666666666666,
+        "threshold": 0.9,
+        "n_pos": 4,
+        "is_new": false
+      },
+      "ISC_": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": false
+      },
+      "NDT": {
+        "auroc": null,
+        "f1": 0.0,
+        "threshold": 0.9,
+        "n_pos": 0,
+        "is_new": false
+      },
+      "IRBBB": {
+        "auroc": 0.9130919127427507,
+        "f1": 0.20245398773006135,
+        "threshold": 0.9,
+        "n_pos": 72,
+        "is_new": false
+      },
+      "STACH": {
+        "auroc": 0.9953542701108341,
+        "f1": 0.9297520661157025,
+        "threshold": 0.8778657913208008,
+        "n_pos": 710,
+        "is_new": false
+      },
+      "PAC": {
+        "auroc": 0.9420379136081957,
+        "f1": 0.5783664459161147,
+        "threshold": 0.8777508735656738,
+        "n_pos": 225,
+        "is_new": true
+      },
+      "Brady": {
+        "auroc": 0.9870800565995443,
+        "f1": 0.9493055555555555,
+        "threshold": 0.7337468862533569,
+        "n_pos": 1392,
+        "is_new": true
+      },
+      "SVT": {
+        "auroc": 0.9944849320464841,
+        "f1": 0.32,
+        "threshold": 0.9,
+        "n_pos": 7,
+        "is_new": true
+      },
+      "LQTP": {
+        "auroc": 0.9223616817413377,
+        "f1": 0.46475195822454307,
+        "threshold": 0.9,
+        "n_pos": 162,
+        "is_new": true
+      },
+      "TAb": {
+        "auroc": 0.879978242498553,
+        "f1": 0.6390532544378699,
+        "threshold": 0.7044786810874939,
+        "n_pos": 1073,
+        "is_new": true
+      },
+      "LAD": {
+        "auroc": 0.9761879172189781,
+        "f1": 0.6047297297297297,
+        "threshold": 0.812285840511322,
+        "n_pos": 206,
+        "is_new": true
+      },
+      "RAD": {
+        "auroc": 0.951116422138131,
+        "f1": 0.4088397790055249,
+        "threshold": 0.8935102224349976,
+        "n_pos": 63,
+        "is_new": true
+      },
+      "NSIVC": {
+        "auroc": 0.9506505229083666,
+        "f1": 0.449438202247191,
+        "threshold": 0.9,
+        "n_pos": 64,
+        "is_new": true
+      },
+      "AFL": {
+        "auroc": 0.9883829325661104,
+        "f1": 0.8846815834767642,
+        "threshold": 0.8617351055145264,
+        "n_pos": 833,
+        "is_new": true
+      },
+      "STc": {
+        "auroc": 0.9005920225167963,
+        "f1": 0.42720763723150357,
+        "threshold": 0.8709754347801208,
+        "n_pos": 311,
+        "is_new": true
+      },
+      "STD": {
+        "auroc": 0.9429799145946814,
+        "f1": 0.42650103519668736,
+        "threshold": 0.894239068031311,
+        "n_pos": 207,
+        "is_new": true
+      },
+      "LAE": {
+        "auroc": 0.9738109991274548,
+        "f1": 0.4694835680751174,
+        "threshold": 0.9,
+        "n_pos": 79,
+        "is_new": true
+      }
+    }
+  },
+  "combined_test": {
+    "macro_auroc": 0.9645611036234338,
+    "macro_f1": 0.5877292566547772,
+    "micro_f1": 0.6999095617857436,
+    "per_class": {
+      "NORM": {
+        "auroc": 0.9466101646994859,
+        "f1": 0.8532267275842376,
+        "threshold": 0.8261843323707581,
+        "n_pos": 1831,
+        "is_new": false
+      },
+      "AFIB": {
+        "auroc": 0.9095191923175949,
+        "f1": 0.26936026936026936,
+        "threshold": 0.8454486131668091,
+        "n_pos": 189,
+        "is_new": false
+      },
+      "PVC": {
+        "auroc": 0.973208786001963,
+        "f1": 0.7542857142857143,
+        "threshold": 0.9,
+        "n_pos": 335,
+        "is_new": false
+      },
+      "LVH": {
+        "auroc": 0.9523926121783451,
+        "f1": 0.6927639383155397,
+        "threshold": 0.7176550626754761,
+        "n_pos": 801,
+        "is_new": false
+      },
+      "IMI": {
+        "auroc": 0.9845111228255139,
+        "f1": 0.6299559471365639,
+        "threshold": 0.9,
+        "n_pos": 175,
+        "is_new": false
+      },
+      "ASMI": {
+        "auroc": 0.9945958689641281,
+        "f1": 0.7581699346405228,
+        "threshold": 0.9,
+        "n_pos": 194,
+        "is_new": false
+      },
+      "CLBBB": {
+        "auroc": 0.9802367340905261,
+        "f1": 0.7660738714090287,
+        "threshold": 0.9,
+        "n_pos": 329,
+        "is_new": false
+      },
+      "CRBBB": {
+        "auroc": 0.9890882332382073,
+        "f1": 0.8797169811320755,
+        "threshold": 0.9,
+        "n_pos": 402,
+        "is_new": false
+      },
+      "LAFB": {
+        "auroc": 0.9276651624203046,
+        "f1": 0.4495530012771392,
+        "threshold": 0.85940021276474,
+        "n_pos": 348,
+        "is_new": false
+      },
+      "1AVB": {
+        "auroc": 0.9678469228596341,
+        "f1": 0.29767441860465116,
+        "threshold": 0.9,
+        "n_pos": 83,
+        "is_new": false
+      },
+      "ISC_": {
+        "auroc": 0.951001813984169,
+        "f1": 0.4180522565320665,
+        "threshold": 0.9,
+        "n_pos": 128,
+        "is_new": false
+      },
+      "NDT": {
+        "auroc": 0.9822743745616087,
+        "f1": 0.5514705882352942,
+        "threshold": 0.9,
+        "n_pos": 182,
+        "is_new": false
+      },
+      "IRBBB": {
+        "auroc": 0.9491069477823901,
+        "f1": 0.4155844155844156,
+        "threshold": 0.9,
+        "n_pos": 184,
+        "is_new": false
+      },
+      "STACH": {
+        "auroc": 0.9966421767786203,
+        "f1": 0.9278350515463918,
+        "threshold": 0.8778657913208008,
+        "n_pos": 710,
+        "is_new": false
+      },
+      "PAC": {
+        "auroc": 0.9572517141676994,
+        "f1": 0.5783664459161147,
+        "threshold": 0.8777508735656738,
+        "n_pos": 225,
+        "is_new": true
+      },
+      "Brady": {
+        "auroc": 0.9912358389894654,
+        "f1": 0.948976049982645,
+        "threshold": 0.7337468862533569,
+        "n_pos": 1392,
+        "is_new": true
+      },
+      "SVT": {
+        "auroc": 0.9959671611695232,
+        "f1": 0.32,
+        "threshold": 0.9,
+        "n_pos": 7,
+        "is_new": true
+      },
+      "LQTP": {
+        "auroc": 0.9429266970761765,
+        "f1": 0.46475195822454307,
+        "threshold": 0.9,
+        "n_pos": 162,
+        "is_new": true
+      },
+      "TAb": {
+        "auroc": 0.9177530490304426,
+        "f1": 0.6390532544378699,
+        "threshold": 0.7044786810874939,
+        "n_pos": 1073,
+        "is_new": true
+      },
+      "LAD": {
+        "auroc": 0.9825497529627198,
+        "f1": 0.6026936026936027,
+        "threshold": 0.812285840511322,
+        "n_pos": 206,
+        "is_new": true
+      },
+      "RAD": {
+        "auroc": 0.9638426204420105,
+        "f1": 0.4065934065934066,
+        "threshold": 0.8935102224349976,
+        "n_pos": 63,
+        "is_new": true
+      },
+      "NSIVC": {
+        "auroc": 0.9636377250943944,
+        "f1": 0.449438202247191,
+        "threshold": 0.9,
+        "n_pos": 64,
+        "is_new": true
+      },
+      "AFL": {
+        "auroc": 0.991925362592315,
+        "f1": 0.8846815834767642,
+        "threshold": 0.8617351055145264,
+        "n_pos": 833,
+        "is_new": true
+      },
+      "STc": {
+        "auroc": 0.9278793972477744,
+        "f1": 0.4266984505363528,
+        "threshold": 0.8709754347801208,
+        "n_pos": 311,
+        "is_new": true
+      },
+      "STD": {
+        "auroc": 0.958454679427798,
+        "f1": 0.42650103519668736,
+        "threshold": 0.894239068031311,
+        "n_pos": 207,
+        "is_new": true
+      },
+      "LAE": {
+        "auroc": 0.9804645833064669,
+        "f1": 0.4694835680751174,
+        "threshold": 0.9,
+        "n_pos": 79,
+        "is_new": true
+      }
+    }
+  }
+}
