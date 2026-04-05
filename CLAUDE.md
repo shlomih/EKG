@@ -3,94 +3,107 @@
 ## Project Overview
 
 Streamlit-based 12-lead ECG analysis POC (`app.py`), targeting a native mobile app later.
-Training happens on **Google Colab** (GPU/TPU). Local CPU is used as fallback only.
+Training happens on **Google Colab** (GPU/TPU via TPU v6e). Local CPU is fallback only.
 Python 3.14 at `C:\Users\osnat\AppData\Local\Programs\Python\Python314\python.exe`.
+EKG dir syncs to Google Drive automatically — any file change is available in Colab immediately.
 
 ---
 
-## Current Phase: V3 Multilabel (26 classes)
-
-The active model is a multilabel CNN trained on PTB-XL with 26 SNOMED/SCP condition classes.
+## Current Phase: V3 Multilabel (26 classes) — fine-tuning + AFIB fix
 
 | File | Description |
 |------|-------------|
-| `multilabel_v3_colab.ipynb` | Main Colab notebook — primary training interface |
-| `multilabel_v3.py` | Local training script (CPU fallback) |
-| `models/ecg_multilabel_v3_best.pt` | Best Colab checkpoint — AUROC=0.9681 (26 classes, Apr 4) |
-| `models/ecg_multilabel_v3.pt` | Local CPU training latest epoch |
+| `multilabel_v3_colab.ipynb` | Main Colab notebook — 3 cells, ready to run |
+| `multilabel_v3.py` | Training script (TPU/GPU/CPU). Also contains inference API for app.py |
+| `models/ecg_multilabel_v3_best.pt` | Best checkpoint — AUROC=0.9687 (CPU run, Apr 5) |
+| `models/thresholds_v3.json` | Per-class thresholds (tuned Apr 5). May also contain temperature field |
+| `temperature_scaling.py` | Calibration script — run after each training to improve F1 |
+| `tune_thresholds.py` | Threshold tuning — run with `--model v3` after training |
+| `eval_v3_auroc.py` | Per-class AUROC + F1 report across PTB-XL + Challenge test sets |
 
-**Best result so far:** AUROC=0.9681 from Colab (after fixing critical .mat extension bug that was zeroing all Challenge data).
-
----
-
-## Architecture Decisions
-
-- **CNN backbone:** ECGNetJoint (1D CNN with SE attention)
-- **Loss:** ASL (Asymmetric Loss) or focal loss for class imbalance
-- **26 classes:** Expanded from 12 → 14 → 26 via PTB-XL + Chapman + Challenge datasets
-- **ECG-FM verdict:** Frozen backbone does NOT beat CNN (AUROC 0.927 vs 0.972). Full fine-tuning helps (HYP F1 0.478) but CNN still wins overall. Stay on CNN.
+**Best result:** AUROC=0.9687 (local CPU, Apr 5). Test MacroF1=0.588, MicroF1=0.700.
 
 ---
 
-## Colab MCP Setup (BLOCKED — needs fix)
+## Architecture
 
-Goal: Claude controls Colab notebooks directly via `colab-mcp` MCP server.
-
-**Status: Not working.** The `open_colab_browser_connection` tool never appears in Claude Code.
-
-**Root cause identified:** `~/.claude.json` has `"hasTrustDialogAccepted": false` under the project config. VS Code extension blocks untrusted MCP servers.
-
-**Fix:**
-1. In VS Code, find and accept the trust dialog for `colab-proxy` MCP server
-   — OR manually set `"hasTrustDialogAccepted": true` in `~/.claude.json` under `projects["C:/Users/osnat/Documents/Shlomi/EKG"]`
-2. Fully restart VS Code (File → Exit, not Reload Window)
-3. Verify by checking `C:\Users\osnat\.claude\wrapper_debug.log` for a new timestamp
-4. Open `colab.new` in browser BEFORE calling `open_colab_browser_connection`
-
-**Config location:** `~/.claude.json` → `projects[...].mcpServers` (NOT `~/.claude/mcp.json` — that's CLI only)
-
-**Wrapper script:** `C:\Users\osnat\.claude\colab_mcp_wrapper.py` — delays `tools/list` by 4s so colab-mcp registers its tool before Claude disconnects. Works correctly when tested manually.
+- **CNN backbone:** ECGNetJoint (1D CNN with SE attention), 1.7M params
+- **Loss:** BCEWithLogitsLoss with per-class pos_weight + AFIB 4x boost
+- **26 classes:** PTB-XL (14) + Challenge 2021 (12 new: PAC, Brady, SVT, LQTP, TAb, LAD, RAD, NSIVC, AFL, STc, STD, LAE)
+- **Datasets:** PTB-XL (18,524) + Chapman (42,390) + Challenge (50,842) = ~111,756 total
+- **Folds:** PTB-XL fold 9=val, fold 10=test. Challenge fold 19=val, fold 20=test (5%/10% split, seed=42)
+- **ECG-FM verdict:** Frozen backbone AUROC=0.927 vs CNN AUROC=0.972 — stay on CNN
 
 ---
 
-## Top 3 Open Problems
+## app.py Status
 
-1. **colab-mcp trust dialog** — MCP server is configured but blocked by `hasTrustDialogAccepted: false`. Accept the trust dialog in VS Code to unblock.
-
-2. **V3 training next steps** — After CPU training finishes (was at epoch ~42/60, best AUROC=0.971 at epoch 31), run threshold tuning. Compare CPU vs Colab checkpoints.
-
-3. **26-class expansion quality** — Need to verify per-class AUROC on the Challenge classes (new additions). The .mat bug fix was recent — rerun full evaluation on test set.
+- **V3 is active** — app loads `ecg_multilabel_v3_best.pt` + `thresholds_v3.json` on startup
+- Falls back to 12-class multilabel if V3 unavailable
+- Full 26-class clinical guidance, urgency colours, and patient context all wired up
+- Model label shows "V3 Multilabel (26 conditions)" in UI
 
 ---
 
-## Key Previous Model Versions
+## Per-Class Performance (Apr 5, combined test fold 10+20)
+
+| Class | AUROC | F1 | Notes |
+|-------|-------|----|-------|
+| Brady | 0.991 | 0.949 | Excellent |
+| STACH | 0.997 | 0.928 | Excellent |
+| AFL | 0.992 | 0.885 | Excellent |
+| CRBBB | 0.989 | 0.880 | Very good |
+| NORM  | 0.947 | 0.853 | Very good |
+| **AFIB** | **0.910** | **0.269** | **Weakest — fix in progress** |
+| 1AVB | 0.968 | 0.298 | High AUROC, calibration issue |
+| LAFB | 0.928 | 0.450 | Domain shift PTB-XL→Challenge |
+
+Classes with AUROC>0.93 but F1<0.47 (1AVB, IRBBB, LQTP, NSIVC, RAD, STD, STc, LAE) have a **calibration** problem — temperature scaling fixes these without retraining.
+
+---
+
+## Colab MCP Setup
+
+**Goal:** Claude controls Colab notebooks directly via `colab-mcp`.
+**Status:** `open_colab_browser_connection` available in Claude Code Desktop (Cowork) only — NOT in VS Code.
+
+To enable in Cowork:
+1. Run `run_setup_colab_mcp_desktop.bat` — adds colab-proxy to `~/.claude/mcp.json`
+2. Fully quit and reopen Claude Desktop
+3. Open `colab.new` in browser
+4. Tell Claude to call `open_colab_browser_connection`
+
+**Wrapper:** `C:\Users\osnat\.claude\colab_mcp_wrapper.py` — delays `tools/list` by 4s (working).
+**Workaround:** EKG dir syncs to Drive — edit files here, run Colab manually.
+
+---
+
+## Open Problems (priority order)
+
+1. **AFIB F1=0.269** — AUROC=0.910 confirms model discriminates but was trained on partially-zeroed data (.mat bug). Fix: next Colab run uses AFIB pos_weight 4x boost + fine-tunes from V3 best. Notebook is ready.
+
+2. **Temperature scaling** — run `run_temperature_scaling.bat` to recalibrate 8 classes stuck at threshold=0.9. Expected +0.10–0.20 F1 per class. Results not yet collected.
+
+3. **Colab MCP** — setup script exists (`run_setup_colab_mcp_desktop.bat`), needs Desktop restart to activate.
+
+---
+
+## Key Model History
 
 | Model | Classes | AUROC | Notes |
 |-------|---------|-------|-------|
 | v10 CNN (ECGNetJoint) | 5 superclass | HYP F1=0.442 | PTB-XL only |
 | v9+v10 Ensemble | 5 superclass | HYP F1=0.456 | Per-class thresholds |
-| ECG-FM Stage 2 (Colab T4) | 5 superclass | HYP F1=0.478 | Full fine-tune |
-| **V3 multilabel (current)** | **26** | **0.9681** | **Production target** |
+| ECG-FM Stage 2 | 5 superclass | HYP F1=0.478 | Full fine-tune, T4 GPU |
+| V3 multilabel | 26 | 0.9687 | **Current best** — CPU Apr 5 |
 
 ---
 
-## What's Working
+## Workflow: After Each Colab Training Run
 
-- Colab training pipeline (multilabel_v3_colab.ipynb) — runs end-to-end
-- .mat file loading bug is fixed (was zeroing all Challenge records)
-- Local CPU training runs (slow but functional)
-- Streamlit app (app.py) loads models and classifies
-
-## What's Not Working
-
-- colab-mcp → `open_colab_browser_connection` not available (trust dialog issue)
-- No automated threshold tuning yet for 26-class model
-
----
-
-## Next Steps (in order)
-
-1. Fix colab-mcp trust issue → verify tool appears → call `open_colab_browser_connection`
-2. Run threshold tuning on `ecg_multilabel_v3_best.pt`
-3. Full per-class evaluation on 26-class test set (especially Challenge classes)
-4. Update app.py to use v3 model (currently uses older 12-class model)
+1. New `ecg_multilabel_v3_best.pt` syncs to local via Drive
+2. Run `run_tune_v3.bat` → updates `thresholds_v3.json`
+3. Run `run_temperature_scaling.bat` → recalibrates thresholds
+4. Run `run_eval_v3_auroc.bat` → check per-class AUROC
+5. Update this CLAUDE.md with new AUROC + per-class highlights
+6. `git commit` + `git push`
