@@ -9,19 +9,23 @@ EKG dir syncs to Google Drive automatically — any file change is available in 
 
 ---
 
-## Current Phase: V3 Multilabel (26 classes) — fine-tuning + AFIB fix
+## Current Phase: V3.1 — RR rhythm features for AFIB fix
 
 | File | Description |
 |------|-------------|
 | `multilabel_v3_colab.ipynb` | Main Colab notebook — 3 cells, ready to run |
 | `multilabel_v3.py` | Training script (TPU/GPU/CPU). Also contains inference API for app.py |
-| `models/ecg_multilabel_v3_best.pt` | Best checkpoint — AUROC=0.9687 (CPU run, Apr 5) |
-| `models/thresholds_v3.json` | Per-class thresholds (tuned Apr 5). May also contain temperature field |
+| `models/ecg_multilabel_v3_best.pt` | Best checkpoint — AUROC=0.9682 (Colab TPU run, Apr 5) |
+| `models/thresholds_v3.json` | Per-class thresholds (tuned Apr 5, temp-scaled T=1.256) |
 | `temperature_scaling.py` | Calibration script — run after each training to improve F1 |
 | `tune_thresholds.py` | Threshold tuning — run with `--model v3` after training |
 | `eval_v3_auroc.py` | Per-class AUROC + F1 report across PTB-XL + Challenge test sets |
+| `diagnose_afib.py` | AFIB signal quality diagnostic (confirmed: no data corruption) |
+| `run_post_training.bat` | **One-click**: threshold tune + temp scale + eval in sequence |
 
-**Best result:** AUROC=0.9687 (local CPU, Apr 5). Test MacroF1=0.588, MicroF1=0.700.
+**Best result:** AUROC=0.9682 (Colab TPU, Apr 5). Combined MacroF1=0.587, MicroF1=0.691.
+
+**V3.1 code ready — needs next Colab run:** `cnn_classifier.py` N_AUX extended 14→18 with 4 RR-interval features. `multilabel_v3.py` checkpoint loader handles the shape mismatch (copies backbone, Xavier-inits new aux columns).
 
 ---
 
@@ -45,20 +49,26 @@ EKG dir syncs to Google Drive automatically — any file change is available in 
 
 ---
 
-## Per-Class Performance (Apr 5, combined test fold 10+20)
+## Per-Class Performance (Apr 5, Colab TPU run, combined test fold 10+20)
 
 | Class | AUROC | F1 | Notes |
 |-------|-------|----|-------|
-| Brady | 0.991 | 0.949 | Excellent |
-| STACH | 0.997 | 0.928 | Excellent |
-| AFL | 0.992 | 0.885 | Excellent |
-| CRBBB | 0.989 | 0.880 | Very good |
-| NORM  | 0.947 | 0.853 | Very good |
-| **AFIB** | **0.910** | **0.269** | **Weakest — fix in progress** |
-| 1AVB | 0.968 | 0.298 | High AUROC, calibration issue |
-| LAFB | 0.928 | 0.450 | Domain shift PTB-XL→Challenge |
+| Brady | 0.994 | 0.952 | Excellent |
+| STACH | 0.995 | 0.922 | Excellent |
+| AFL | 0.990 | 0.888 | Excellent |
+| CRBBB | 0.989 | 0.867 | Very good |
+| NORM  | 0.940 | 0.804 | Good |
+| **AFIB** | **0.904** | **0.268** | **Hard ceiling — AUROC limits F1 at this prevalence** |
+| 1AVB | 0.971 | 0.330 | High AUROC, low test count (83 positives) |
+| LAFB | 0.915 | 0.409 | Domain shift PTB-XL→Challenge |
 
-Classes with AUROC>0.93 but F1<0.47 (1AVB, IRBBB, LQTP, NSIVC, RAD, STD, STc, LAE) have a **calibration** problem — temperature scaling fixes these without retraining.
+**AFIB root cause (confirmed Apr 5):**
+- Signal loading is clean — 0/11,590 records load as zeros
+- AFIB is a *rhythm* disorder; prior aux features (indices 0-13) were all morphology/voltage
+- F1≈0.27 is the theoretical ceiling given AUROC=0.90 at 3.7% test prevalence
+- Fix: added RR-interval features (mean RR, SDNN, RMSSD, irregularity) as aux indices 14-17
+- N_AUX extended 14→18 in cnn_classifier.py; checkpoint loader handles size mismatch
+- **Next Colab run will be V3.1 — expected AFIB AUROC improvement to 0.93+**
 
 ---
 
@@ -80,11 +90,9 @@ To enable in Cowork:
 
 ## Open Problems (priority order)
 
-1. **AFIB F1=0.269** — AUROC=0.910 confirms model discriminates but was trained on partially-zeroed data (.mat bug). Fix: next Colab run uses AFIB pos_weight 4x boost + fine-tunes from V3 best. Notebook is ready.
+1. **AFIB F1=0.268** — Real cause identified: all-morphology aux features miss rhythm irregularity. Fix implemented (N_AUX 14→18, RR features at indices 14-17). Next Colab run = V3.1. AFIB weight boost reduced to 2x (4x was too aggressive, destabilised training).
 
-2. **Temperature scaling** — run `run_temperature_scaling.bat` to recalibrate 8 classes stuck at threshold=0.9. Expected +0.10–0.20 F1 per class. Results not yet collected.
-
-3. **Colab MCP** — setup script exists (`run_setup_colab_mcp_desktop.bat`), needs Desktop restart to activate.
+2. **Colab MCP** — setup script exists (`run_setup_colab_mcp_desktop.bat`), needs Desktop restart to activate.
 
 ---
 

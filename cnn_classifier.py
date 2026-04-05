@@ -66,7 +66,8 @@ GLOBAL_NORM_SCALE = 5.0
 N_CLASSES = 5
 
 # Auxiliary features: 8 voltage + 2 demographic + 1 axis + 3 morphology (v10)
-N_AUX = 14
+#                   + 4 RR-interval / rhythm features (v3.1)
+N_AUX = 18
 
 # Standard 12-lead index mapping (PTB-XL WFDB order)
 _LEAD_IDX = {
@@ -165,6 +166,59 @@ def _qrs_duration_norm(sig_12xN, fs):
     return float(np.clip(float(np.median(durations)) / 0.20, 0.0, 2.0))
 
 
+def extract_rr_features(sig_12xN):
+    """
+    Compute 4 RR-interval / rhythm features from Lead II.
+
+    These are the primary features a cardiologist uses to identify AFIB:
+    AFIB = irregular RR intervals + absent P waves. The irregularity metrics
+    here directly capture that signal.
+
+    Returns 4-dim float32 array:
+      14: mean_rr_norm      mean RR in seconds (normalised to [0.3, 2.0])
+      15: sdnn_norm         std of RR intervals in seconds (/ 0.2 s)
+      16: rmssd_norm        root-mean-square successive differences (/ 0.2 s)
+      17: irregularity      coefficient of variation = SDNN / meanRR
+                            Normal sinus ~0.02-0.05; AFIB typically 0.15-0.5
+    """
+    from scipy.signal import find_peaks
+
+    FS = 500  # samples per second
+    LEAD_II = _LEAD_IDX["II"]
+    lead = sig_12xN[LEAD_II]
+
+    # Fallback values representing a regular 75 bpm rhythm with normal variability
+    FALLBACK = np.array([0.80, 0.03, 0.03, 0.04], dtype=np.float32)
+
+    max_amp = float(np.max(lead))
+    if max_amp < 0.05:          # flat / unreadable lead
+        return FALLBACK
+
+    height   = max(0.15 * max_amp, 0.05)  # adaptive threshold
+    distance = 40                           # min 80 ms between peaks at 500 Hz
+    peaks, _ = find_peaks(lead, height=height, distance=distance)
+
+    if len(peaks) < 3:
+        return FALLBACK
+
+    rr = np.diff(peaks).astype(np.float64)   # RR intervals in samples
+    rr_s = rr / FS                            # convert to seconds
+
+    mean_rr   = float(np.mean(rr_s))
+    sdnn      = float(np.std(rr_s))
+    succ_diff = np.diff(rr_s)
+    rmssd     = float(np.sqrt(np.mean(succ_diff ** 2))) if len(succ_diff) > 0 else 0.0
+    irr       = sdnn / (mean_rr + 1e-8)
+
+    feats = np.array([
+        float(np.clip(mean_rr,  0.3,  2.0)),           # index 14
+        float(np.clip(sdnn / 0.2,  0.0, 1.0)),         # index 15
+        float(np.clip(rmssd / 0.2, 0.0, 1.0)),         # index 16
+        float(np.clip(irr,  0.0, 0.5)),                 # index 17
+    ], dtype=np.float32)
+    return feats
+
+
 def extract_voltage_features(sig_12xN, sex="M", age=50):
     """
     Extract 14-dim voltage + demographic feature vector from raw (12, N) signal in mV.
@@ -234,7 +288,8 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
         cvdp_norm,          # index 13 -- new v10
     ], dtype=np.float32)
 
-    return feats
+    rr_feats = extract_rr_features(sig_12xN)   # indices 14-17 -- new v3.1
+    return np.concatenate([feats, rr_feats])
 
 
 # -------------------------------------------------------------

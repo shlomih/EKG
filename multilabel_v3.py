@@ -88,9 +88,11 @@ V2_MODEL_PATH   = "models/ecg_multilabel_v2.pt"
 N_CLASSES       = N_V3   # 26
 
 # AFIB class weight multiplier — boosts loss penalty for missed AFIB detections.
-# AFIB has 11,590 positives but low AUROC (0.875) due to .mat bug during prior training.
-# Multiplying pos_weight pushes the model to prioritise recall on AFIB.
-AFIB_WEIGHT_BOOST = 4.0   # increase to 5-6 if AFIB recall remains poor after retrain
+# AFIB AUROC ~0.87-0.90: the model discriminates but F1 is low (~0.27) because AFIB
+# is a RHYTHM disorder and prior aux features were all morphology/voltage.
+# v3.1 fix: 4 RR-interval features added to N_AUX (indices 14-17 in cnn_classifier.py).
+# Weight boost kept at 2x during fine-tuning to maintain recall without over-penalising.
+AFIB_WEIGHT_BOOST = 2.0
 
 # Mapping: 12-class PTB-XL index -> 26-class V3 index
 PTBXL_TO_V3 = np.array([
@@ -319,12 +321,30 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     #   3. Random init        (--scratch flag)
     if not from_scratch and os.path.exists(MODEL_BEST_PATH):
         v3_ckpt = torch.load(MODEL_BEST_PATH, map_location="cpu", weights_only=False)
-        state = {k: v.to(model.state_dict()[k].dtype)
-                 for k, v in v3_ckpt["model_state"].items()
-                 if k in model.state_dict()}
-        model.load_state_dict(state, strict=True)
+        old_n_aux = v3_ckpt.get("n_aux", 14)
+        cur_state = model.state_dict()
+        state = {}
+        for k, v in v3_ckpt["model_state"].items():
+            if k not in cur_state:
+                continue
+            if cur_state[k].shape == v.shape:
+                # Shapes match — transfer directly
+                state[k] = v.to(cur_state[k].dtype)
+            elif k == "aux_branch.0.weight" and old_n_aux < N_AUX:
+                # N_AUX grew: copy old columns, Xavier-init new ones
+                new_w = cur_state[k].clone().float()
+                new_w[:, :old_n_aux] = v[:, :old_n_aux].float()
+                # Xavier uniform for the 4 new RR-feature columns
+                nn.init.xavier_uniform_(new_w[:, old_n_aux:])
+                state[k] = new_w.to(cur_state[k].dtype)
+                print(f"  aux_branch input: extended {old_n_aux} → {N_AUX} features "
+                      f"(new RR cols Xavier-initialised)")
+            # else: skip mismatched keys (shouldn't happen for other layers)
+        missing = model.load_state_dict(state, strict=False)
         prev_auroc = v3_ckpt.get("best_auroc", 0)
         print(f"  Loaded V3 best checkpoint (AUROC={prev_auroc:.4f}) — fine-tuning")
+        if missing.missing_keys:
+            print(f"  Missing keys (randomly initialised): {missing.missing_keys}")
         # Lower LR for fine-tuning from a strong V3 checkpoint
         base_lr = 1e-4
         lr = base_lr * (batch_size / 64)

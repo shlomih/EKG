@@ -81,7 +81,7 @@ def run(model_version="v2"):
     if model_version == "v3":
         from multilabel_v3 import V3ECGDataset, load_v3_data
         from dataset_challenge import V3_CODES, N_V3
-        model_path   = "models/ecg_multilabel_v3.pt"
+        model_path   = "models/ecg_multilabel_v3_best.pt"
         thresh_path  = "models/thresholds_v3.json"
         codes        = V3_CODES
         n_classes    = N_V3

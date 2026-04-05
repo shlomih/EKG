@@ -176,7 +176,7 @@ def run(model_path: str = "models/ecg_multilabel_v3.pt",
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="models/ecg_multilabel_v3.pt",
+    parser.add_argument("--model", default="models/ecg_multilabel_v3_best.pt",
                         help="Path to model checkpoint")
     parser.add_argument("--thresholds", default="models/thresholds_v3.json",
                         help="Path to thresholds JSON")
