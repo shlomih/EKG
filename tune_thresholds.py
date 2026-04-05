@@ -112,16 +112,26 @@ def run(model_version="v2"):
         all_paths, all_labels, all_folds = load_merged_data()
     all_folds = np.array(all_folds)
 
-    val_mask  = all_folds == 9
-    test_mask = all_folds == 10
+    # V3: Challenge data lives in folds 19 (val) and 20 (test) — not 9/10.
+    # Must use mixed masks so the 12 Challenge-only classes have positives to tune on.
+    if model_version == "v3":
+        val_mask  = (all_folds == 9)  | (all_folds == 19)
+        test_mask = (all_folds == 10) | (all_folds == 20)
+    else:
+        val_mask  = all_folds == 9
+        test_mask = all_folds == 10
+
     val_paths    = [p for p, m in zip(all_paths, val_mask)  if m]
     test_paths   = [p for p, m in zip(all_paths, test_mask) if m]
     val_labels   = all_labels[val_mask]
     test_labels  = all_labels[test_mask]
 
     demographics = load_demographics()
-    all_ptbxl = list(set(val_paths + test_paths))
-    raw_cache, aux_cache = preload_signals(all_ptbxl, demographics)
+    # Only preload PTB-XL signals (folds 9 and 10); Challenge records load lazily
+    ptbxl_val_paths  = [p for p, f in zip(all_paths, all_folds) if f == 9]
+    ptbxl_test_paths = [p for p, f in zip(all_paths, all_folds) if f == 10]
+    ptbxl_paths = list(set(ptbxl_val_paths + ptbxl_test_paths))
+    raw_cache, aux_cache = preload_signals(ptbxl_paths, demographics)
 
     if model_version == "v3":
         val_ds  = V3ECGDataset(val_paths,  val_labels,  raw_cache, aux_cache)
@@ -146,7 +156,8 @@ def run(model_version="v2"):
     print(f"\nCollecting test probs ({len(test_paths)} records)...")
     test_probs, test_labels_np = collect_probs(model, test_loader, device)
 
-    print(f"\n--- Tuned thresholds on TEST set (fold 10) ---")
+    test_set_label = "fold 10 + Challenge fold 20" if model_version == "v3" else "fold 10"
+    print(f"\n--- Tuned thresholds on TEST set ({test_set_label}) ---")
     macro, micro, per_f1 = evaluate_with_thresholds(test_probs, test_labels_np, tuned, codes)
 
     result = {

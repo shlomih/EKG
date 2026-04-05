@@ -49,19 +49,29 @@ try:
 except ImportError:
     INTERVAL_ENGINE_AVAILABLE = False
 
-# Load order: multilabel > ensemble > single CNN > sklearn
+# Load order: v3 multilabel (26-class) > v1 multilabel (12-class) > ensemble > single CNN > sklearn
 _clf_model = None
 _clf_type = None
 CLASSIFIER_AVAILABLE = False
 
 try:
-    from multilabel_classifier import load_multilabel_cnn, predict_multilabel
-    _clf_model = load_multilabel_cnn()
+    from multilabel_v3 import load_v3_cnn, predict_v3, V3_URGENCY as _V3_URGENCY
+    _clf_model = load_v3_cnn()
     if _clf_model is not None:
         CLASSIFIER_AVAILABLE = True
-        _clf_type = "multilabel"
+        _clf_type = "multilabel_v3"
 except Exception:
     pass
+
+if not CLASSIFIER_AVAILABLE:
+    try:
+        from multilabel_classifier import load_multilabel_cnn, predict_multilabel
+        _clf_model = load_multilabel_cnn()
+        if _clf_model is not None:
+            CLASSIFIER_AVAILABLE = True
+            _clf_type = "multilabel"
+    except Exception:
+        pass
 
 if not CLASSIFIER_AVAILABLE:
     try:
@@ -104,8 +114,10 @@ except ImportError:
 
 
 def classify_ecg(model, signal_12, fs, lead_names=None, sex="M", age=50):
-    """Classify using multilabel (preferred) or fallback to ensemble/hybrid/CNN/sklearn."""
-    if _clf_type == "multilabel":
+    """Classify using V3 multilabel (preferred) or fallback to ensemble/hybrid/CNN/sklearn."""
+    if _clf_type == "multilabel_v3":
+        return predict_v3(model, signal_12, fs=fs, sex=sex, age=age)
+    elif _clf_type == "multilabel":
         return predict_multilabel(model, signal_12, fs=fs, sex=sex, age=age)
     elif _clf_type == "ensemble":
         return predict_ensemble(model, signal_12, fs=fs, sex=sex, age=age)
@@ -628,7 +640,8 @@ if 'signal' in st.session_state:
     # ── AI Classification (when 12-lead data available) ──
     if CLASSIFIER_AVAILABLE and "signals_12" in st.session_state:
         model_label = (
-            t("model_multilabel") if _clf_type == "multilabel"
+            "V3 Multilabel (26 conditions)" if _clf_type == "multilabel_v3"
+            else t("model_multilabel") if _clf_type == "multilabel"
             else t("model_ensemble") if _clf_type == "ensemble"
             else t("model_hybrid") if (HYBRID_AVAILABLE and _clf_type == "cnn")
             else t("model_cnn") if _clf_type == "cnn"
@@ -643,12 +656,12 @@ if 'signal' in st.session_state:
         )
 
         # Apply patient context to multi-label results
-        if _clf_type == "multilabel":
+        if _clf_type in ("multilabel", "multilabel_v3"):
             from multilabel_classifier import apply_patient_context
             result = apply_patient_context(result, patient_profile)
 
         # ── Multi-label display ──
-        if _clf_type == "multilabel":
+        if _clf_type in ("multilabel", "multilabel_v3"):
             urgency_colors = {3: "#FF4444", 2: "#FF8C00", 1: "#FFD700", 0: "#00C49F"}
             urgency_labels = {
                 3: t("urgency_critical"),
@@ -663,7 +676,7 @@ if 'signal' in st.session_state:
                 conditions = [result.get("primary", "NORM")]
 
             # ── Summary header ──────────────────────────────────────────────
-            from multilabel_classifier import URGENCY as _URGENCY
+            _URGENCY = _V3_URGENCY if _clf_type == "multilabel_v3" else __import__("multilabel_classifier").URGENCY
             _n_critical = sum(1 for c in conditions if _URGENCY.get(c, 0) == 3)
             _n_abnormal = sum(1 for c in conditions if _URGENCY.get(c, 0) == 2)
             _n_mild     = sum(1 for c in conditions if _URGENCY.get(c, 0) == 1)

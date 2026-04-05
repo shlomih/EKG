@@ -82,9 +82,15 @@ from dataset_chapman import MERGED_CODES, load_chapman_multilabel
 from dataset_challenge import V3_CODES, N_V3, load_challenge_multilabel
 
 # -- Constants -----------------------------------------------------------------
-MODEL_PATH    = "models/ecg_multilabel_v3.pt"
-V2_MODEL_PATH = "models/ecg_multilabel_v2.pt"
-N_CLASSES     = N_V3   # 26
+MODEL_PATH      = "models/ecg_multilabel_v3.pt"
+MODEL_BEST_PATH = "models/ecg_multilabel_v3_best.pt"
+V2_MODEL_PATH   = "models/ecg_multilabel_v2.pt"
+N_CLASSES       = N_V3   # 26
+
+# AFIB class weight multiplier — boosts loss penalty for missed AFIB detections.
+# AFIB has 11,590 positives but low AUROC (0.875) due to .mat bug during prior training.
+# Multiplying pos_weight pushes the model to prioritise recall on AFIB.
+AFIB_WEIGHT_BOOST = 4.0   # increase to 5-6 if AFIB recall remains poor after retrain
 
 # Mapping: 12-class PTB-XL index -> 26-class V3 index
 PTBXL_TO_V3 = np.array([
@@ -307,8 +313,23 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
         model = model.to(torch.bfloat16)
         print("  Using bfloat16 precision (TPU native)")
 
-    # Transfer weights from v2 model (14-class -> 26-class)
-    if not from_scratch and os.path.exists(V2_MODEL_PATH):
+    # Weight initialisation priority:
+    #   1. V3 best checkpoint (fine-tune from best known weights)
+    #   2. V2 checkpoint      (transfer learning, 14→26 class)
+    #   3. Random init        (--scratch flag)
+    if not from_scratch and os.path.exists(MODEL_BEST_PATH):
+        v3_ckpt = torch.load(MODEL_BEST_PATH, map_location="cpu", weights_only=False)
+        state = {k: v.to(model.state_dict()[k].dtype)
+                 for k, v in v3_ckpt["model_state"].items()
+                 if k in model.state_dict()}
+        model.load_state_dict(state, strict=True)
+        prev_auroc = v3_ckpt.get("best_auroc", 0)
+        print(f"  Loaded V3 best checkpoint (AUROC={prev_auroc:.4f}) — fine-tuning")
+        # Lower LR for fine-tuning from a strong V3 checkpoint
+        base_lr = 1e-4
+        lr = base_lr * (batch_size / 64)
+        print(f"  Fine-tune LR: {lr:.1e} (reduced from default for V3 continuation)")
+    elif not from_scratch and os.path.exists(V2_MODEL_PATH):
         v2_ckpt = torch.load(V2_MODEL_PATH, map_location="cpu", weights_only=False)
         v2_state = v2_ckpt["model_state"]
         v3_state = model.state_dict()
@@ -327,6 +348,15 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     print(f"  Model params: {n_params/1e6:.1f}M  ({N_CLASSES} output classes)")
 
     pos_weight = compute_pos_weights(train_labels).to(device)
+
+    # Boost AFIB weight — AUROC=0.875 is the weakest class, limited by .mat bug
+    # during prior training runs. 4x multiplier pushes recall without destabilising
+    # other classes. Adjust AFIB_WEIGHT_BOOST constant if needed.
+    afib_idx = V3_CODES.index("AFIB")
+    pos_weight[afib_idx] *= AFIB_WEIGHT_BOOST
+    print(f"  AFIB pos_weight boosted {AFIB_WEIGHT_BOOST}x "
+          f"(idx={afib_idx}, new weight={pos_weight[afib_idx].item():.2f})")
+
     if is_tpu:
         pos_weight = pos_weight.to(torch.bfloat16)
     criterion  = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -334,7 +364,7 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     scheduler  = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=lr,
         steps_per_epoch=len(train_loader),
-        epochs=n_epochs, pct_start=0.1,
+        epochs=n_epochs, pct_start=0.05,   # shorter warmup for fine-tuning
     )
 
     best_auroc = 0.0
@@ -492,6 +522,211 @@ def eval_saved():
 
     _print_results(model, test_loader,  device, title="PTB-XL fold 10 (14 original classes)")
     _print_results(model, ctest_loader, device, title="Challenge test set (all 26 classes)")
+
+
+# ---------------------------------------------------------------------------
+# Inference API  (used by app.py)
+# ---------------------------------------------------------------------------
+import json as _json
+import scipy.signal as _scipy_signal
+
+# Extend condition metadata with all 26 V3 classes
+V3_CONDITION_DESCRIPTIONS = {
+    "NORM":  "Normal ECG",
+    "AFIB":  "Atrial Fibrillation",
+    "PVC":   "Premature Ventricular Contraction",
+    "LVH":   "Left Ventricular Hypertrophy",
+    "IMI":   "Inferior Myocardial Infarction",
+    "ASMI":  "Anteroseptal Myocardial Infarction",
+    "CLBBB": "Complete Left Bundle Branch Block",
+    "CRBBB": "Complete Right Bundle Branch Block",
+    "LAFB":  "Left Anterior Fascicular Block",
+    "1AVB":  "First-Degree AV Block",
+    "ISC_":  "Non-Specific Ischemic ST Changes",
+    "NDT":   "Non-Diagnostic T Abnormalities",
+    "IRBBB": "Incomplete Right Bundle Branch Block",
+    "STACH": "Sinus Tachycardia",
+    "PAC":   "Premature Atrial Contraction",
+    "Brady": "Bradycardia",
+    "SVT":   "Supraventricular Tachycardia",
+    "LQTP":  "Prolonged QT Interval",
+    "TAb":   "T-Wave Abnormality",
+    "LAD":   "Left Axis Deviation",
+    "RAD":   "Right Axis Deviation",
+    "NSIVC": "Non-Specific Intraventricular Conduction Delay",
+    "AFL":   "Atrial Flutter",
+    "STc":   "ST-T Change",
+    "STD":   "ST Depression",
+    "LAE":   "Left Atrial Enlargement",
+}
+
+V3_URGENCY = {
+    # Urgency 3 — critical / immediate action
+    "AFIB": 3, "AFL": 3, "IMI": 3, "ASMI": 3, "CLBBB": 3,
+    # Urgency 2 — significant / prompt review
+    "LVH": 2, "PVC": 2, "CRBBB": 2, "ISC_": 2, "SVT": 2,
+    "LQTP": 2, "STD": 2, "STc": 2,
+    # Urgency 1 — mild / monitor
+    "LAFB": 1, "1AVB": 1, "NDT": 1, "IRBBB": 1, "STACH": 1,
+    "PAC": 1, "Brady": 1, "TAb": 1, "LAD": 1, "RAD": 1,
+    "NSIVC": 1, "LAE": 1,
+    # Urgency 0 — normal
+    "NORM": 0,
+}
+
+V3_CLINICAL_GUIDANCE = {
+    "NORM":  {"action": "No acute findings. Routine follow-up as indicated.", "note": ""},
+    "AFIB":  {"action": "Assess stroke risk (CHA2DS2-VASc). Consider anticoagulation. Rate/rhythm control.",
+              "note": "Irregular rhythm — no distinct P waves."},
+    "AFL":   {"action": "Rate control or rhythm control. Assess for anticoagulation (similar risk to AFIB).",
+              "note": "Atrial flutter — typically 2:1 or 3:1 block with sawtooth flutter waves."},
+    "PVC":   {"action": "Assess frequency and symptoms. If >10% burden or symptomatic, refer for Holter + echo.",
+              "note": "Isolated PVCs are common and often benign."},
+    "LVH":   {"action": "Evaluate for hypertension or hypertrophic cardiomyopathy. Echo recommended.",
+              "note": "Voltage criteria met — Cornell/Sokolow-Lyon thresholds exceeded."},
+    "IMI":   {"action": "If acute: activate cath lab. Check reciprocal changes in I/aVL. Evaluate RV involvement.",
+              "note": "Inferior territory (RCA or LCx). ST elevation in II, III, aVF."},
+    "ASMI":  {"action": "If acute: activate cath lab. Anteroseptal STEMI protocol.",
+              "note": "Anterior territory (LAD). ST elevation in V1–V4."},
+    "CLBBB": {"action": "New LBBB with chest pain: treat as STEMI equivalent — activate cath lab.",
+              "note": "Complete LBBB — Sgarbossa criteria if ischaemia suspected."},
+    "CRBBB": {"action": "Isolated CRBBB often benign. New CRBBB with symptoms — assess for PE or acute MI.",
+              "note": "Complete RBBB — RSR' in V1, wide S in I/V6."},
+    "LAFB":  {"action": "Usually benign in isolation. Monitor for progression to bifascicular block.",
+              "note": "Left anterior fascicular block — LAD with small q in I/aVL."},
+    "1AVB":  {"action": "Usually benign. Review medications (beta-blockers, digoxin). Annual follow-up.",
+              "note": "PR interval > 200ms. No treatment usually required."},
+    "ISC_":  {"action": "Compare with prior ECG. If new or symptomatic, evaluate for ACS.",
+              "note": "Non-specific ischaemic ST changes — may indicate demand ischaemia."},
+    "NDT":   {"action": "Non-diagnostic. Correlate with clinical history and symptoms.",
+              "note": "Non-diagnostic T-wave abnormalities — many potential causes."},
+    "IRBBB": {"action": "Usually benign. No immediate action required.",
+              "note": "Incomplete RBBB — RSR' pattern in V1, QRS < 120ms."},
+    "STACH": {"action": "Identify and treat underlying cause (pain, fever, hypovolaemia, anaemia).",
+              "note": "Sinus tachycardia — rate > 100bpm with normal P waves."},
+    "PAC":   {"action": "Usually benign. If frequent or symptomatic, evaluate for structural heart disease.",
+              "note": "Premature atrial contraction — early narrow beat with abnormal P wave."},
+    "Brady": {"action": "If symptomatic (syncope, hypotension), assess for pacemaker indication. Review medications.",
+              "note": "Bradycardia — HR < 60bpm."},
+    "SVT":   {"action": "Vagal manoeuvres or adenosine for acute termination. Refer for EP study if recurrent.",
+              "note": "Supraventricular tachycardia — narrow complex tachycardia."},
+    "LQTP":  {"action": "Review QT-prolonging medications. Electrolyte correction. Consider cardiology referral.",
+              "note": "Prolonged QTc — risk of Torsades de Pointes. QTc ≥ 500ms is high risk."},
+    "TAb":   {"action": "Correlate with symptoms. Compare with prior ECG. Evaluate electrolytes.",
+              "note": "T-wave abnormality — inversion or flattening."},
+    "LAD":   {"action": "Usually incidental. Rule out LAFB, inferior MI, or ventricular hypertrophy.",
+              "note": "Left axis deviation — QRS axis between −30° and −90°."},
+    "RAD":   {"action": "Evaluate for RVH, RBBB, lateral MI, or PE if new.",
+              "note": "Right axis deviation — QRS axis > +90°."},
+    "NSIVC": {"action": "Monitor. Evaluate for structural heart disease if new or symptomatic.",
+              "note": "Non-specific intraventricular conduction delay — QRS 110–119ms."},
+    "STc":   {"action": "Compare with prior ECG. If new or symptomatic, evaluate for ischaemia or pericarditis.",
+              "note": "ST-T change — non-specific."},
+    "STD":   {"action": "If new or ≥1mm in multiple leads with symptoms, evaluate urgently for ACS.",
+              "note": "ST depression — may indicate subendocardial ischaemia or reciprocal change."},
+    "LAE":   {"action": "Evaluate for mitral valve disease, hypertension, or LV dysfunction. Echo recommended.",
+              "note": "Left atrial enlargement — broad/notched P wave in II, or biphasic in V1."},
+}
+
+_V3_THRESHOLDS_PATH = "models/thresholds_v3.json"
+_v3_calibration_cache: dict | None = None
+
+
+def _load_v3_calibration() -> dict:
+    """Load thresholds + optional temperature from JSON, cached after first read."""
+    global _v3_calibration_cache
+    if _v3_calibration_cache is None:
+        with open(_V3_THRESHOLDS_PATH) as f:
+            data = _json.load(f)
+        _v3_calibration_cache = {
+            "thresholds": data["thresholds"],
+            "temperature": data.get("temperature", None),
+            "method": data.get("calibration_method", None),
+        }
+    return _v3_calibration_cache
+
+
+def load_v3_cnn(model_path: str = MODEL_PATH):
+    """Load V3 26-class model for inference. Returns model in eval mode."""
+    ckpt  = torch.load(model_path, map_location="cpu", weights_only=False)
+    model = ECGNetJoint(n_leads=N_LEADS, n_classes=N_CLASSES, n_aux=N_AUX)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    return model
+
+
+def predict_v3(model, signal_12: np.ndarray, fs: int = 500,
+               sex: str = "M", age: float = 50.0) -> dict:
+    """
+    Run V3 26-class inference on a single ECG.
+
+    Args:
+        model:      loaded ECGNetJoint (from load_v3_cnn)
+        signal_12:  (12, N) numpy array in mV
+        fs:         sampling frequency in Hz
+        sex:        "M" or "F" (affects voltage feature extraction)
+        age:        patient age in years
+
+    Returns dict compatible with predict_multilabel output:
+        primary, description, confidence, conditions, scores, per_class
+    """
+    if signal_12 is None or signal_12.ndim != 2 or signal_12.shape[0] != 12:
+        raise ValueError(f"signal_12 must be (12, N), got {getattr(signal_12, 'shape', type(signal_12))}")
+
+    sig = signal_12.copy()
+    if sig.shape[1] != SIGNAL_LEN:
+        sig = _scipy_signal.resample(sig, SIGNAL_LEN, axis=1)
+
+    sig_norm = (sig / 5.0).astype(np.float32)
+    aux      = extract_voltage_features(sig, sex=sex, age=age)
+
+    with torch.no_grad():
+        logits = model(
+            torch.from_numpy(sig_norm).unsqueeze(0),
+            torch.from_numpy(aux).unsqueeze(0),
+        )
+        logits_np = logits.squeeze(0).numpy()  # (26,)
+
+    # Apply temperature scaling if calibration was fitted
+    cal = _load_v3_calibration()
+    thresholds = cal["thresholds"]
+    T = cal["temperature"]
+    if T is not None:
+        if isinstance(T, list):
+            # Per-class temperature
+            logits_np = logits_np / np.array(T, dtype=np.float32)
+        else:
+            # Global temperature
+            logits_np = logits_np / float(T)
+    probs = 1.0 / (1.0 + np.exp(-logits_np))  # sigmoid
+    conditions = [
+        code for i, code in enumerate(V3_CODES)
+        if probs[i] >= thresholds.get(code, 0.5)
+    ]
+    conditions.sort(key=lambda c: (-V3_URGENCY.get(c, 0), -float(probs[V3_CODES.index(c)])))
+
+    scores  = {code: float(probs[i]) for i, code in enumerate(V3_CODES)}
+    primary = conditions[0] if conditions else V3_CODES[int(np.argmax(probs))]
+    primary_idx = V3_CODES.index(primary)
+
+    return {
+        "primary":     primary,
+        "description": V3_CONDITION_DESCRIPTIONS.get(primary, primary),
+        "confidence":  float(probs[primary_idx]),
+        "conditions":  conditions,
+        "scores":      scores,
+        "per_class": {
+            code: {
+                "prob":        float(probs[i]),
+                "detected":    bool(probs[i] >= thresholds.get(code, 0.5)),
+                "description": V3_CONDITION_DESCRIPTIONS.get(code, code),
+                "urgency":     V3_URGENCY.get(code, 0),
+                "action":      V3_CLINICAL_GUIDANCE.get(code, {}).get("action", ""),
+                "note":        V3_CLINICAL_GUIDANCE.get(code, {}).get("note", ""),
+            }
+            for i, code in enumerate(V3_CODES)
+        },
+    }
 
 
 if __name__ == "__main__":
