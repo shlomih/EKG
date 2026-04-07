@@ -80,6 +80,11 @@ from multilabel_classifier import (
 )
 from dataset_chapman import MERGED_CODES, load_chapman_multilabel
 from dataset_challenge import V3_CODES, N_V3, load_challenge_multilabel
+from dataset_code15 import (
+    load_code15_multilabel, load_code15_signal,
+    CODE15_PATH_PREFIX, build_code15_demo_cache,
+    CODE15_INDEX,
+)
 
 # -- Constants -----------------------------------------------------------------
 MODEL_PATH      = "models/ecg_multilabel_v3.pt"
@@ -88,11 +93,13 @@ V2_MODEL_PATH   = "models/ecg_multilabel_v2.pt"
 N_CLASSES       = N_V3   # 26
 
 # AFIB class weight multiplier — boosts loss penalty for missed AFIB detections.
-# AFIB AUROC ~0.87-0.90: the model discriminates but F1 is low (~0.27) because AFIB
-# is a RHYTHM disorder and prior aux features were all morphology/voltage.
-# v3.1 fix: 4 RR-interval features added to N_AUX (indices 14-17 in cnn_classifier.py).
-# Weight boost kept at 2x during fine-tuning to maintain recall without over-penalising.
-AFIB_WEIGHT_BOOST = 2.0
+# History:
+#   v3.0 : 4x boost (too aggressive, destabilised training)
+#   v3.1 : 2x boost + RR-interval features (aux indices 14-17)
+#   v3.2 : 1.5x boost — CODE-15% adds ~17K AFIB records, reducing the raw imbalance.
+#           The prevalence in combined dataset is now ~3x higher, so heavy weighting
+#           is less critical. Lower boost = better calibration across all classes.
+AFIB_WEIGHT_BOOST = 1.5
 
 # Mapping: 12-class PTB-XL index -> 26-class V3 index
 PTBXL_TO_V3 = np.array([
@@ -168,6 +175,16 @@ class V3ECGDataset(Dataset):
         if path in self.raw_cache:
             sig = self.raw_cache[path].copy()
             aux = self.aux_cache[path]
+        elif path.startswith(CODE15_PATH_PREFIX):
+            # CODE-15%: load from HDF5 via dataset_code15 (400 Hz → 500 Hz resampled)
+            sig = load_code15_signal(path)
+            aux = extract_voltage_features(sig)
+            # Patch demographics from CODE-15% demo cache if available
+            if hasattr(self, "demo_cache") and path in self.demo_cache:
+                sex_f, age_n = self.demo_cache[path]
+                aux = aux.copy()
+                aux[8] = sex_f   # sex feature index (consistent with PTB-XL loading)
+                aux[9] = age_n   # age feature index
         else:
             sig = _load_raw_signal(path)
             aux = extract_voltage_features(sig)
@@ -214,16 +231,48 @@ def load_v3_data():
     chal_folds[perm[:n_test]]           = 20   # challenge test
     chal_folds[perm[n_test:n_test+n_val]] = 19  # challenge val
 
+    # CODE-15% (optional — only if index exists)
+    code15_paths, code15_labels26, code15_folds = [], np.empty((0, N_CLASSES), dtype=np.float32), np.empty(0, dtype=int)
+    if CODE15_INDEX.exists():
+        print("Loading CODE-15% dataset...")
+        try:
+            c15_paths, c15_labels26 = load_code15_multilabel(codes=V3_CODES)
+            N_c15 = len(c15_paths)
+            # Assign random train/val/test split for CODE-15%:
+            #   10% test (fold 30), 5% val (fold 29), rest train (fold 0)
+            # Uses a fixed seed to keep splits deterministic across runs.
+            rng15  = np.random.default_rng(1337)
+            perm15 = rng15.permutation(N_c15)
+            n_test15 = int(N_c15 * 0.10)
+            n_val15  = int(N_c15 * 0.05)
+            c15_folds = np.zeros(N_c15, dtype=int)
+            c15_folds[perm15[:n_test15]]                  = 30   # code15 test
+            c15_folds[perm15[n_test15:n_test15 + n_val15]] = 29  # code15 val
+            print(f"  CODE-15%: {N_c15} records  "
+                  f"(train {int((c15_folds==0).sum())} / "
+                  f"val {int((c15_folds==29).sum())} / "
+                  f"test {int((c15_folds==30).sum())})")
+            code15_paths  = c15_paths
+            code15_labels26 = c15_labels26
+            code15_folds  = c15_folds
+        except Exception as e:
+            print(f"  WARNING: Could not load CODE-15% ({e}). Continuing without it.")
+    else:
+        print("  CODE-15% index not found — skipping. "
+              "Run: python dataset_code15.py --download && python dataset_code15.py --index")
+
     # Merge all
-    all_paths  = ptb_paths + chap_paths + chal_paths
-    all_labels = np.concatenate([ptb_labels26, chap_labels26, chal_labels26], axis=0)
-    all_folds  = np.concatenate([ptb_folds, chap_folds, chal_folds], axis=0)
+    all_paths  = ptb_paths + chap_paths + chal_paths + code15_paths
+    all_labels = np.concatenate([ptb_labels26, chap_labels26, chal_labels26, code15_labels26], axis=0)
+    all_folds  = np.concatenate([ptb_folds,    chap_folds,    chal_folds,    code15_folds],    axis=0)
 
     n_chal_train = int((chal_folds == 0).sum())
     n_chal_val   = int((chal_folds == 19).sum())
     n_chal_test  = int((chal_folds == 20).sum())
+    N_c15_total  = len(code15_paths)
     print(f"  V3 dataset: {N_ptb} PTB-XL + {N_chap} Chapman + {N_chal} Challenge"
-          f" = {len(all_paths)} total")
+          + (f" + {N_c15_total} CODE-15%" if N_c15_total else "")
+          + f" = {len(all_paths)} total")
     print(f"  Challenge split: {n_chal_train} train / {n_chal_val} val / {n_chal_test} test")
     print(f"  Per-class positives:")
     for i, code in enumerate(V3_CODES):
@@ -239,7 +288,7 @@ def load_v3_data():
 def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     print("\n" + "=" * 60)
     print("  V3 Multi-Label ECG Classifier  (26 conditions)")
-    print("  PTB-XL + Chapman + PhysioNet 2021 Challenge")
+    print("  PTB-XL + Chapman + PhysioNet 2021 Challenge + CODE-15%")
     print("=" * 60)
 
     device, dev_type = _get_device()
@@ -257,26 +306,35 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
 
     all_paths, all_labels, all_folds = load_v3_data()
 
+    # Fold assignments:
+    #   PTB-XL   : 1-8 = train, 9 = val, 10 = test
+    #   Chapman  : 0   = train-only
+    #   Challenge: 0   = train, 19 = val, 20 = test
+    #   CODE-15% : 0   = train, 29 = val, 30 = test
     train_mask  = (all_folds <= 8) | (all_folds == 0)
-    # Mixed val: PTB-XL fold 9 + Challenge fold 19
-    # This ensures early stopping sees all 26 classes (new classes only exist in Challenge)
-    val_mask    = (all_folds == 9) | (all_folds == 19)
+    # Mixed val: PTB-XL fold 9 + Challenge fold 19 + CODE-15% fold 29
+    # This ensures early stopping sees all 26 classes across all data sources.
+    val_mask    = (all_folds == 9) | (all_folds == 19) | (all_folds == 29)
     test_mask   = all_folds == 10
     ctest_mask  = all_folds == 20
+    c15test_mask = all_folds == 30
 
-    train_paths   = [p for p, m in zip(all_paths, train_mask) if m]
-    val_paths     = [p for p, m in zip(all_paths, val_mask)   if m]
-    test_paths    = [p for p, m in zip(all_paths, test_mask)  if m]
-    ctest_paths   = [p for p, m in zip(all_paths, ctest_mask) if m]
-    train_labels  = all_labels[train_mask]
-    val_labels    = all_labels[val_mask]
-    test_labels   = all_labels[test_mask]
-    ctest_labels  = all_labels[ctest_mask]
+    train_paths    = [p for p, m in zip(all_paths, train_mask) if m]
+    val_paths      = [p for p, m in zip(all_paths, val_mask)   if m]
+    test_paths     = [p for p, m in zip(all_paths, test_mask)  if m]
+    ctest_paths    = [p for p, m in zip(all_paths, ctest_mask) if m]
+    c15test_paths  = [p for p, m in zip(all_paths, c15test_mask) if m]
+    train_labels   = all_labels[train_mask]
+    val_labels     = all_labels[val_mask]
+    test_labels    = all_labels[test_mask]
+    ctest_labels   = all_labels[ctest_mask]
+    c15test_labels = all_labels[c15test_mask]
 
     print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}"
-          f" | Challenge-test: {len(ctest_paths)}")
+          f" | Challenge-test: {len(ctest_paths)}"
+          + (f" | CODE15-test: {len(c15test_paths)}" if c15test_paths else ""))
 
-    # Preload PTB-XL only; Chapman + Challenge load lazily
+    # Preload PTB-XL only; Chapman + Challenge + CODE-15% load lazily
     print("  Pre-loading PTB-XL signals into RAM...")
     demographics = load_demographics()
     ptbxl_paths  = [p for p in set(train_paths + val_paths + test_paths)
@@ -284,29 +342,49 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     raw_cache, aux_cache = preload_signals(ptbxl_paths, demographics)
     print(f"  Cached {len(raw_cache)} PTB-XL signals.")
 
-    train_ds  = V3ECGDataset(train_paths,  train_labels,  raw_cache, aux_cache, augment=True)
-    val_ds    = V3ECGDataset(val_paths,    val_labels,    raw_cache, aux_cache, augment=False)
-    test_ds   = V3ECGDataset(test_paths,   test_labels,   raw_cache, aux_cache, augment=False)
-    ctest_ds  = V3ECGDataset(ctest_paths,  ctest_labels,  raw_cache, aux_cache, augment=False)
+    # CODE-15% demographics cache (age + sex for aux feature indices 8, 9)
+    c15_demo_cache = {}
+    if CODE15_INDEX.exists():
+        print("  Building CODE-15% demographics cache...")
+        c15_demo_cache = build_code15_demo_cache(CODE15_INDEX)
+        print(f"  CODE-15% demo cache: {len(c15_demo_cache)} entries")
+
+    def _make_ds(paths, labels, augment):
+        ds = V3ECGDataset(paths, labels, raw_cache, aux_cache, augment=augment)
+        ds.demo_cache = c15_demo_cache   # attach for CODE-15% path handling
+        return ds
+
+    train_ds   = _make_ds(train_paths,    train_labels,   augment=True)
+    val_ds     = _make_ds(val_paths,      val_labels,     augment=False)
+    test_ds    = _make_ds(test_paths,     test_labels,    augment=False)
+    ctest_ds   = _make_ds(ctest_paths,    ctest_labels,   augment=False)
+    c15test_ds = _make_ds(c15test_paths,  c15test_labels, augment=False) if c15test_paths else None
 
     # DataLoader config — TPU needs drop_last=True to avoid XLA recompilation
-    # on a smaller final batch, and num_workers>0 for CPU-side prefetch
+    # on a smaller final batch, and num_workers>0 for CPU-side prefetch.
+    # Note: CODE-15% HDF5 loading uses module-level file handle caching which is
+    # fork-safe — each worker process gets its own copy of the handle dict.
     dl_workers = 2 if is_tpu else 0
-    train_loader  = DataLoader(train_ds,  batch_size=batch_size, shuffle=True,
-                               num_workers=dl_workers, drop_last=is_tpu)
-    val_loader    = DataLoader(val_ds,    batch_size=batch_size, shuffle=False,
-                               num_workers=dl_workers, drop_last=False)
-    test_loader   = DataLoader(test_ds,   batch_size=batch_size, shuffle=False,
-                               num_workers=dl_workers, drop_last=False)
-    ctest_loader  = DataLoader(ctest_ds,  batch_size=batch_size, shuffle=False,
-                               num_workers=dl_workers, drop_last=False)
+    train_loader    = DataLoader(train_ds,  batch_size=batch_size, shuffle=True,
+                                 num_workers=dl_workers, drop_last=is_tpu)
+    val_loader      = DataLoader(val_ds,    batch_size=batch_size, shuffle=False,
+                                 num_workers=dl_workers, drop_last=False)
+    test_loader     = DataLoader(test_ds,   batch_size=batch_size, shuffle=False,
+                                 num_workers=dl_workers, drop_last=False)
+    ctest_loader    = DataLoader(ctest_ds,  batch_size=batch_size, shuffle=False,
+                                 num_workers=dl_workers, drop_last=False)
+    c15test_loader  = (DataLoader(c15test_ds, batch_size=batch_size, shuffle=False,
+                                  num_workers=dl_workers, drop_last=False)
+                       if c15test_ds is not None else None)
 
     # Wrap loaders with MpDeviceLoader for async CPU→TPU data transfer
     if is_tpu:
-        train_loader = MpDeviceLoader(train_loader, device)
-        val_loader   = MpDeviceLoader(val_loader, device)
-        test_loader  = MpDeviceLoader(test_loader, device)
-        ctest_loader = MpDeviceLoader(ctest_loader, device)
+        train_loader  = MpDeviceLoader(train_loader,  device)
+        val_loader    = MpDeviceLoader(val_loader,    device)
+        test_loader   = MpDeviceLoader(test_loader,   device)
+        ctest_loader  = MpDeviceLoader(ctest_loader,  device)
+        if c15test_loader is not None:
+            c15test_loader = MpDeviceLoader(c15test_loader, device)
 
     model = ECGNetJoint(n_leads=N_LEADS, n_classes=N_CLASSES, n_aux=N_AUX).to(device)
 
@@ -431,7 +509,8 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
             marker = " <*>"
             # Save locally on every improvement
             _save_ckpt = {"model_state": best_state, "best_auroc": best_auroc,
-                          "label_codes": V3_CODES, "n_classes": N_CLASSES}
+                          "label_codes": V3_CODES, "n_classes": N_CLASSES,
+                          "n_aux": N_AUX, "includes_code15": CODE15_INDEX.exists()}
             if is_tpu:
                 xm.save(_save_ckpt, MODEL_PATH)
             else:
@@ -463,7 +542,8 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     _final_ckpt = {"model_state": best_state or {k: v.cpu().clone().float()
                    for k, v in model.state_dict().items()},
                    "best_auroc": best_auroc, "label_codes": V3_CODES,
-                   "n_classes": N_CLASSES}
+                   "n_classes": N_CLASSES, "n_aux": N_AUX,
+                   "includes_code15": CODE15_INDEX.exists()}
     if is_tpu:
         xm.save(_final_ckpt, MODEL_PATH)
     else:
@@ -471,6 +551,8 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
     print(f"\n  Saved: {MODEL_PATH}")
     _print_results(model, test_loader,  device, title="PTB-XL fold 10 (14 original classes)")
     _print_results(model, ctest_loader, device, title="Challenge test set (all 26 classes)")
+    if c15test_loader is not None:
+        _print_results(model, c15test_loader, device, title="CODE-15% test set (AF/1dAVb/RBBB/LBBB/SB/ST)")
 
 
 def _print_results(model, loader, device, title="Test Results"):

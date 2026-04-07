@@ -225,3 +225,7 @@ models/thresholds_tuning_log.txt
 models/*.zip
 models/*.whl
 EKG.zip
+
+# Database and Drive temp
+ekg_platform.db
+.tmp.driveupload/

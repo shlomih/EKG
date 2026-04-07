@@ -30,6 +30,7 @@ from multilabel_v3 import (
 )
 from multilabel_classifier import load_demographics, preload_signals
 from dataset_chapman import MERGED_CODES
+from dataset_code15 import build_code15_demo_cache, CODE15_INDEX, CODE15_PATH_PREFIX
 
 
 def collect_probs(model, loader, device):
@@ -131,16 +132,21 @@ def run(model_path: str = "models/ecg_multilabel_v3.pt",
 
     ptbxl_test_mask = all_folds == 10
     chal_test_mask  = all_folds == 20
+    c15_test_mask   = all_folds == 30
     combined_mask   = ptbxl_test_mask | chal_test_mask
 
     demographics = load_demographics()
     ptbxl_test_paths = [p for p, m in zip(all_paths, ptbxl_test_mask) if m]
     raw_cache, aux_cache = preload_signals(ptbxl_test_paths, demographics)
 
+    # CODE-15% demographics cache (age + sex)
+    c15_demo_cache = build_code15_demo_cache(CODE15_INDEX) if CODE15_INDEX.exists() else {}
+
     def make_loader(mask):
         paths  = [p for p, m in zip(all_paths, mask) if m]
         labels = all_labels[mask]
         ds = V3ECGDataset(paths, labels, raw_cache, aux_cache)
+        ds.demo_cache = c15_demo_cache   # needed for CODE-15% HDF5 signal loading
         return DataLoader(ds, batch_size=128, shuffle=False, num_workers=0), labels
 
     new_codes = set(V3_CODES) - set(MERGED_CODES)
@@ -167,6 +173,15 @@ def run(model_path: str = "models/ecg_multilabel_v3.pt",
     results["combined_test"] = print_table(
         "Combined Test (fold 10 + 20) — full 26-class evaluation", probs, lbl_np, tuned_thresholds, V3_CODES, new_codes
     )
+
+    if c15_test_mask.sum() > 0:
+        print("\nRunning inference on CODE-15% test (fold 30)...")
+        loader, labels = make_loader(c15_test_mask)
+        probs, lbl_np = collect_probs(model, loader, device)
+        results["code15_test"] = print_table(
+            "CODE-15% Test (fold 30) — AF/1dAVb/RBBB/LBBB/SB/ST + NORM", probs, lbl_np,
+            tuned_thresholds, V3_CODES, new_codes
+        )
 
     out_path = "eval_v3_auroc_results.json"
     with open(out_path, "w") as f:

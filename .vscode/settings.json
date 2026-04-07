@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "colab-mcp": {
+      "command": "uvx",
+      "args": ["git+https://github.com/googlecolab/colab-mcp"],
+      "timeout": 30000
+    }
+  },
+  "chat.tools.terminal.autoApprove": {
+    "uv": true
+  }
+}

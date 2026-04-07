@@ -9,13 +9,14 @@ EKG dir syncs to Google Drive automatically — any file change is available in 
 
 ---
 
-## Current Phase: V3.1 — RR rhythm features for AFIB fix
+## Current Phase: V3.2 — CODE-15% integration (AFIB + 1AVB data fix)
 
 | File | Description |
 |------|-------------|
 | `multilabel_v3_colab.ipynb` | Main Colab notebook — 3 cells, ready to run |
-| `multilabel_v3.py` | Training script (TPU/GPU/CPU). Also contains inference API for app.py |
-| `models/ecg_multilabel_v3_best.pt` | Best checkpoint — AUROC=0.9682 (Colab TPU run, Apr 5) |
+| `multilabel_v3.py` | Training script (TPU/GPU/CPU). **Updated for V3.2 with CODE-15% support** |
+| `dataset_code15.py` | **NEW** — CODE-15% downloader, HDF5 reader, label mapper, index builder |
+| `models/ecg_multilabel_v3_best.pt` | Best checkpoint — AUROC=0.9682 (Colab TPU, Apr 5) |
 | `models/thresholds_v3.json` | Per-class thresholds (tuned Apr 5, temp-scaled T=1.256) |
 | `temperature_scaling.py` | Calibration script — run after each training to improve F1 |
 | `tune_thresholds.py` | Threshold tuning — run with `--model v3` after training |
@@ -23,19 +24,32 @@ EKG dir syncs to Google Drive automatically — any file change is available in 
 | `diagnose_afib.py` | AFIB signal quality diagnostic (confirmed: no data corruption) |
 | `run_post_training.bat` | **One-click**: threshold tune + temp scale + eval in sequence |
 
-**Best result:** AUROC=0.9682 (Colab TPU, Apr 5). Combined MacroF1=0.587, MicroF1=0.691.
+**Best result (V3.1):** AUROC=0.9682 (Colab TPU, Apr 5). Combined MacroF1=0.587, MicroF1=0.691.
 
-**V3.1 code ready — needs next Colab run:** `cnn_classifier.py` N_AUX extended 14→18 with 4 RR-interval features. `multilabel_v3.py` checkpoint loader handles the shape mismatch (copies backbone, Xavier-inits new aux columns).
+**V3.2 code ready — needs Colab run with CODE-15% downloaded first:**
+- `dataset_code15.py` written — Zenodo downloader + HDF5 reader + label mapper
+- `multilabel_v3.py` updated — CODE-15% integrated into `load_v3_data()` and `V3ECGDataset`
+- AFIB weight boost reduced 2.0→1.5 (CODE-15% adds ~17K AFIB records, less boosting needed)
+- New fold assignments: CODE-15% train=fold 0, val=fold 29, test=fold 30 (seed=1337)
+- **Before next Colab run, download CODE-15%:** `python dataset_code15.py --download` (35 GB, ~60 min)
+- V3.1 RR-interval features (N_AUX 14→18) still in place — combined effect expected
+
+**Expected AFIB improvement with V3.2:**
+- Current: AUROC=0.904, F1=0.268 (3.7% prevalence, morphology-only features)
+- V3.1 adds RR features: expected AUROC→0.93+
+- V3.2 adds CODE-15% ~17K AFIB records (3x increase): expected F1→0.45–0.55
+- Combined V3.1+V3.2: realistic target AFIB F1≥0.50, AUROC≥0.94
 
 ---
 
 ## Architecture
 
 - **CNN backbone:** ECGNetJoint (1D CNN with SE attention), 1.7M params
-- **Loss:** BCEWithLogitsLoss with per-class pos_weight + AFIB 4x boost
+- **Loss:** BCEWithLogitsLoss with per-class pos_weight + AFIB 1.5x boost (reduced from 2x as CODE-15% reduces AFIB imbalance)
 - **26 classes:** PTB-XL (14) + Challenge 2021 (12 new: PAC, Brady, SVT, LQTP, TAb, LAD, RAD, NSIVC, AFL, STc, STD, LAE)
-- **Datasets:** PTB-XL (18,524) + Chapman (42,390) + Challenge (50,842) = ~111,756 total
-- **Folds:** PTB-XL fold 9=val, fold 10=test. Challenge fold 19=val, fold 20=test (5%/10% split, seed=42)
+- **Datasets (V3.2 target):** PTB-XL (18,524) + Chapman (42,390) + Challenge (50,842) + CODE-15% (345,779) = ~457,535 total
+- **Datasets (current, pre-CODE-15%):** PTB-XL (18,524) + Chapman (42,390) + Challenge (50,842) = ~111,756 total
+- **Folds:** PTB-XL fold 9=val, fold 10=test. Challenge fold 19=val, fold 20=test. CODE-15% fold 29=val, fold 30=test
 - **ECG-FM verdict:** Frozen backbone AUROC=0.927 vs CNN AUROC=0.972 — stay on CNN
 
 ---
@@ -90,7 +104,11 @@ To enable in Cowork:
 
 ## Open Problems (priority order)
 
-1. **AFIB F1=0.268** — Real cause identified: all-morphology aux features miss rhythm irregularity. Fix implemented (N_AUX 14→18, RR features at indices 14-17). Next Colab run = V3.1. AFIB weight boost reduced to 2x (4x was too aggressive, destabilised training).
+1. **AFIB F1=0.268 + 1AVB F1=0.330** — Two-part fix now ready:
+   - **V3.1:** RR-interval features (N_AUX 14→18) — code in `cnn_classifier.py`, checkpoint loader handles mismatch
+   - **V3.2:** CODE-15% integration — `dataset_code15.py` written, `multilabel_v3.py` updated
+   - **Action needed:** Run `python dataset_code15.py --download` on Colab (35 GB), then `--index`, then retrain
+   - AFIB weight boost set to 1.5x (reduced from 2x since CODE-15% triples AFIB training data)
 
 2. **Colab MCP** — setup script exists (`run_setup_colab_mcp_desktop.bat`), needs Desktop restart to activate.
 
@@ -103,9 +121,28 @@ To enable in Cowork:
 | v10 CNN (ECGNetJoint) | 5 superclass | HYP F1=0.442 | PTB-XL only |
 | v9+v10 Ensemble | 5 superclass | HYP F1=0.456 | Per-class thresholds |
 | ECG-FM Stage 2 | 5 superclass | HYP F1=0.478 | Full fine-tune, T4 GPU |
-| V3 multilabel | 26 | 0.9687 | **Current best** — CPU Apr 5 |
+| V3 multilabel | 26 | 0.9687 | **Current best** — Colab TPU Apr 5 |
+| V3.2 multilabel | 26 | TBD | +CODE-15% (345K records) — run pending |
 
 ---
+
+## Workflow: V3.2 First Run (with CODE-15%)
+
+On Colab, before training:
+```
+# Step 1 — Download CODE-15% (~35 GB, ~60 min on Colab)
+!python dataset_code15.py --download
+
+# Step 2 — Build index (reads all 18 H5 files, ~30 min)
+!pip install h5py -q
+!python dataset_code15.py --index
+
+# Step 3 — Check stats
+!python dataset_code15.py --stats
+
+# Step 4 — Train (picks up CODE-15% automatically via load_v3_data)
+!python multilabel_v3.py
+```
 
 ## Workflow: After Each Colab Training Run
 
