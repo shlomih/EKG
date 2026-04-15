@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "EKG Intelligence",
+    "slug": "ekg-intelligence",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "ekg-intelligence",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "sdkVersion": "52.0.0",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ekgintelligence.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used to capture paper ECG strips for analysis",
+        "NSFaceIDUsageDescription": "Face ID protects your health data from unauthorized access"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#071312"
+      },
+      "package": "com.ekgintelligence.app",
+      "allowBackup": false,
+      "permissions": [
+        "CAMERA",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ],
+      "blockedPermissions": [
+        "READ_CONTACTS",
+        "WRITE_CONTACTS",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-local-authentication",
+      "expo-camera",
+      "expo-asset"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
