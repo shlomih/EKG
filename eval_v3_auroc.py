@@ -80,7 +80,7 @@ def print_table(title, probs, labels, tuned_thresholds, codes, new_codes):
         print(f"  {code:<8} {tag} {urg:>3}  {auroc_str}  {per_f1[i]:>6.3f}  {thresh:>7.3f}  {n_pos:>6}")
 
     # Flag weak classes (AUROC < 0.85 or F1 < 0.40 with enough positives)
-    print(f"\n  ⚠️  Attention flags (AUROC < 0.85 or F1 < 0.40 with N+ ≥ 10):")
+    print(f"\n  [!] Attention flags (AUROC < 0.85 or F1 < 0.40 with N+ >= 10):")
     flagged = False
     for code, tag, urg, auroc, f1_val, thresh, n_pos in rows:
         if n_pos >= 10:

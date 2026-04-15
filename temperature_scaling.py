@@ -294,7 +294,7 @@ def run(model_path: str = MODEL_PATH):
         if n_pos == 0:
             continue
         delta = per_f1_pc[i] - per_f1_old[i]
-        marker = " ⬆" if delta > 0.02 else " ⬇" if delta < -0.02 else ""
+        marker = " [+]" if delta > 0.02 else " [-]" if delta < -0.02 else ""
         print(f"  {code:<8} {per_f1_old[i]:>7.3f} {per_f1_global[i]:>7.3f} "
               f"{per_f1_pc[i]:>7.3f} {delta:>+7.3f}{marker}")
 
@@ -339,7 +339,7 @@ def run(model_path: str = MODEL_PATH):
     out_path = "models/thresholds_v3.json"
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
-    print(f"\n  Saved calibrated thresholds → {out_path}")
+    print(f"\n  Saved calibrated thresholds -> {out_path}")
     print(f"  Method: {best_method}")
     print(f"  Test MacroF1: {best_macro:.3f}  (was {macro_old:.3f}, delta={best_macro - macro_old:+.3f})")
 

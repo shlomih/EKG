@@ -21,12 +21,16 @@ from sklearn.metrics import f1_score, precision_recall_curve
 os.chdir(Path(__file__).parent)
 
 from cnn_classifier import N_AUX, SIGNAL_LEN, N_LEADS, ECGNetJoint
-from multilabel_merged import (
-    MergedECGDataset, load_merged_data, MERGED_CODES, N_CLASSES,
-)
 from multilabel_classifier import (
     load_demographics, preload_signals, CONF_THRESHOLD,
 )
+try:
+    from multilabel_merged import (
+        MergedECGDataset, load_merged_data, MERGED_CODES, N_CLASSES,
+    )
+except ImportError:
+    # multilabel_merged only needed for v1/v2; v3 uses multilabel_v3 instead
+    MergedECGDataset = load_merged_data = MERGED_CODES = N_CLASSES = None
 
 
 def collect_probs(model, loader, device):
