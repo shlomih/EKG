@@ -1,0 +1,13 @@
+{
+  "model_version": "V3",
+  "created_at": "2025-04-15",
+  "sha256": "TODO_COMPUTE_FROM_ONNX_EXPORT",
+  "size_bytes": 0,
+  "input_shape": {
+    "signal": [1, 12, 5000],
+    "aux": [1, 18]
+  },
+  "output_shape": {
+    "logits": [1, 26]
+  }
+}

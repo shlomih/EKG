@@ -1,15 +1,20 @@
 /**
  * Dashboard — home screen after authentication.
  *
- * Shows: recent analyses, quick actions, model version info.
+ * Shows: recent analyses, quick actions, model version info, model load status.
  * Clinical disclaimer always visible (HIPAA 5.3.5).
  */
 
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
+import useAppStore from '@/src/store/useAppStore';
+
+const MODEL_AUROC = '0.990';
+const MODEL_VERSION = 'V3.2b Multilabel (26 conditions)';
 
 export default function DashboardScreen() {
   const router = useRouter();
+  const { modelLoaded, modelVersion } = useAppStore();
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -28,6 +33,14 @@ export default function DashboardScreen() {
 
         <TouchableOpacity
           style={styles.actionCard}
+          onPress={() => router.push('/scan?demo=true')}
+        >
+          <Text style={styles.actionIcon}>🧪</Text>
+          <Text style={styles.actionLabel}>Demo</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.actionCard}
           onPress={() => router.push('/patients')}
         >
           <Text style={styles.actionIcon}>👤</Text>
@@ -38,10 +51,15 @@ export default function DashboardScreen() {
       {/* Model Info */}
       <View style={styles.infoCard}>
         <Text style={styles.infoTitle}>Model</Text>
-        <Text style={styles.infoText}>V3 Multilabel (26 conditions)</Text>
+        <Text style={styles.infoText}>{MODEL_VERSION}</Text>
         <Text style={styles.infoText}>ECGNetJoint — 1.7M parameters</Text>
-        <Text style={styles.infoText}>AUROC: 0.9682</Text>
+        <Text style={styles.infoText}>AUROC: {MODEL_AUROC}</Text>
         <Text style={styles.infoText}>On-device inference (ONNX Runtime)</Text>
+        <View style={styles.statusRow}>
+          <Text style={[styles.statusBadge, modelLoaded ? styles.statusLoaded : styles.statusPending]}>
+            {modelLoaded ? '✓ Loaded' : '○ Loading'}
+          </Text>
+        </View>
       </View>
 
       {/* Clinical Disclaimer — HIPAA 5.3.5 / FDA 7.1 */}
@@ -76,14 +94,16 @@ const styles = StyleSheet.create({
   },
   actionsRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
     marginBottom: 24,
+    flexWrap: 'wrap',
   },
   actionCard: {
     flex: 1,
+    minWidth: 100,
     backgroundColor: '#0D1F1E',
     borderRadius: 12,
-    padding: 20,
+    padding: 16,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#1E3533',
@@ -115,6 +135,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#5A8A85',
     marginBottom: 2,
+  },
+  statusRow: {
+    marginTop: 12,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1E3533',
+  },
+  statusBadge: {
+    fontSize: 12,
+    fontWeight: '600',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  statusLoaded: {
+    color: '#00E5B0',
+    backgroundColor: '#00E5B020',
+  },
+  statusPending: {
+    color: '#FFD700',
+    backgroundColor: '#FFD70020',
   },
   disclaimer: {
     backgroundColor: '#1a1a2e',

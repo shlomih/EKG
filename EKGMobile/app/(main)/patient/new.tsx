@@ -24,6 +24,7 @@ import {
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { savePatient } from '@/src/db/PatientRepository';
 
 export default function NewPatientScreen() {
   const router = useRouter();
@@ -47,17 +48,17 @@ export default function NewPatientScreen() {
     }
 
     try {
-      // TODO: Import and call PatientRepository.savePatient({
-      //   first_name: firstName.trim(),
-      //   last_name: lastName.trim(),
-      //   id_number: idNumber.trim() || null,
-      //   age: age ? parseInt(age) : null,
-      //   sex,
-      //   k_level: kLevel ? parseFloat(kLevel) : null,
-      //   has_pacemaker: hasPacemaker,
-      //   is_athlete: isAthlete,
-      //   is_pregnant: sex === 'F' ? isPregnant : false,
-      // });
+      await savePatient({
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        id_number: idNumber.trim() || null,
+        age: age ? parseInt(age) : null,
+        sex,
+        k_level: kLevel ? parseFloat(kLevel) : null,
+        has_pacemaker: hasPacemaker,
+        is_athlete: isAthlete,
+        is_pregnant: sex === 'F' ? isPregnant : false,
+      });
 
       Alert.alert(t('patient_save_success'));
       router.back();

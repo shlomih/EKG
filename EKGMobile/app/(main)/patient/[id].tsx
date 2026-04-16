@@ -16,8 +16,11 @@ import { useCallback, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Patient } from '@/src/types/Patient';
 import { AnalysisResult } from '@/src/types/ECGRecord';
+import { getPatient, deletePatient } from '@/src/db/PatientRepository';
+import { listRecordsByPatient } from '@/src/db/RecordRepository';
+import { listAnalysesByRecord } from '@/src/db/AnalysisRepository';
 
-// TODO: Replace mock data with actual data from repositories
+// Fallback mock patient for development if database is unavailable
 const MOCK_PATIENT: Patient = {
   patient_id: 'demo-1',
   first_name: 'Demo',
@@ -72,10 +75,29 @@ export default function PatientDetailScreen() {
   // Load patient and analyses from database
   useEffect(() => {
     const loadData = async () => {
+      if (!id) return;
       try {
-        // TODO: Import and call PatientRepository.getPatient(id) and RecordRepository.listRecordsByPatient(id)
-        setPatient(MOCK_PATIENT);
-        setAnalyses(MOCK_ANALYSES);
+        const patientData = await getPatient(id);
+        if (patientData) {
+          setPatient(patientData);
+        } else {
+          setPatient(MOCK_PATIENT);
+        }
+
+        // Load all records for this patient, then get analyses for each record
+        const records = await listRecordsByPatient(id);
+        const allAnalyses: AnalysisResult[] = [];
+        for (const record of records) {
+          const recordAnalyses = await listAnalysesByRecord(record.ekg_id);
+          allAnalyses.push(...recordAnalyses);
+        }
+        // Sort by created_at descending
+        allAnalyses.sort((a, b) => {
+          const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return dateB - dateA;
+        });
+        setAnalyses(allAnalyses);
       } catch (error) {
         console.error('Failed to load patient data:', error);
         // Fall back to mock data
@@ -98,7 +120,9 @@ export default function PatientDetailScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              // TODO: Call PatientRepository.deletePatient(id)
+              if (id) {
+                await deletePatient(id);
+              }
               router.back();
               Alert.alert(t('patient_delete_success'));
             } catch (error) {

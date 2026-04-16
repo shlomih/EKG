@@ -15,8 +15,9 @@ import { useRouter } from 'expo-router';
 import { useCallback, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Patient } from '@/src/types/Patient';
+import { listPatients } from '@/src/db/PatientRepository';
 
-// TODO: Replace mock data with PatientRepository.listPatients() when DB is ready
+// Fallback mock data for development if database is unavailable
 const MOCK_PATIENTS: Patient[] = [
   {
     patient_id: 'demo-1',
@@ -54,9 +55,8 @@ export default function PatientsScreen() {
   useEffect(() => {
     const loadPatients = async () => {
       try {
-        // TODO: Import and call PatientRepository.listPatients() here
-        // For now, use mock data
-        setPatients(MOCK_PATIENTS);
+        const patientsData = await listPatients();
+        setPatients(patientsData);
       } catch (error) {
         console.error('Failed to load patients:', error);
         // Fall back to mock data
@@ -70,8 +70,8 @@ export default function PatientsScreen() {
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      // TODO: Reload patients from database
-      setPatients(MOCK_PATIENTS);
+      const patientsData = await listPatients();
+      setPatients(patientsData);
     } catch (error) {
       console.error('Failed to refresh patients:', error);
     } finally {
