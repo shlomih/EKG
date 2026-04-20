@@ -7,6 +7,7 @@
     }
   },
   "chat.tools.terminal.autoApprove": {
-    "uv": true
+    "uv": true,
+    "Test-Path": true
   }
 }

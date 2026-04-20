@@ -1,13 +1,45 @@
 {
-  "model_version": "V3",
-  "created_at": "2025-04-15",
-  "sha256": "TODO_COMPUTE_FROM_ONNX_EXPORT",
-  "size_bytes": 0,
-  "input_shape": {
-    "signal": [1, 12, 5000],
-    "aux": [1, 18]
-  },
-  "output_shape": {
-    "logits": [1, 26]
+  "version": "v3",
+  "n_classes": 26,
+  "n_leads": 12,
+  "signal_length": 5000,
+  "n_aux": 18,
+  "label_codes": [
+    "NORM",
+    "AFIB",
+    "PVC",
+    "LVH",
+    "IMI",
+    "ASMI",
+    "CLBBB",
+    "CRBBB",
+    "LAFB",
+    "1AVB",
+    "ISC_",
+    "NDT",
+    "IRBBB",
+    "STACH",
+    "PAC",
+    "Brady",
+    "SVT",
+    "LQTP",
+    "TAb",
+    "LAD",
+    "RAD",
+    "NSIVC",
+    "AFL",
+    "STc",
+    "STD",
+    "LAE"
+  ],
+  "files": {
+    "ecg_v3.onnx": {
+      "sha256": "e23ba4cb67e1037a5186167a031ff6a3e440ce41d00247d0ae1941b348f88689",
+      "size_bytes": 6803351
+    },
+    "thresholds_v3.json": {
+      "sha256": "19e428e3611c5186cead5e5cd0da7cd847e24ccc82cf3214e873dae54efa9d7b",
+      "size_bytes": 2613
+    }
   }
 }

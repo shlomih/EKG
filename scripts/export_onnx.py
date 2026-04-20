@@ -77,16 +77,22 @@ def export_onnx(model: torch.nn.Module, output_path: Path):
     dummy_aux = torch.randn(1, N_AUX, dtype=torch.float32)
 
     print(f"\nExporting to ONNX: {output_path}")
-    torch.onnx.export(
-        model,
-        (dummy_signal, dummy_aux),
-        str(output_path),
+    # PyTorch >= 2.5 added `dynamo` parameter; default may be True (requires onnxscript).
+    # Force legacy TorchScript exporter (no onnxscript needed) via dynamo=False.
+    export_kwargs = dict(
         input_names=["signal", "aux"],
         output_names=["logits"],
         dynamic_axes=None,  # Fixed batch size 1 for mobile inference
         opset_version=13,
         do_constant_folding=True,
     )
+    try:
+        torch.onnx.export(model, (dummy_signal, dummy_aux), str(output_path),
+                          dynamo=False, **export_kwargs)
+    except TypeError:
+        # dynamo kwarg not supported in this PyTorch version (< 2.5) — use default
+        torch.onnx.export(model, (dummy_signal, dummy_aux), str(output_path),
+                          **export_kwargs)
 
     size_mb = output_path.stat().st_size / 1e6
     print(f"  ONNX exported: {size_mb:.1f} MB")
