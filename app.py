@@ -158,6 +158,22 @@ st.markdown("""
     .stTabs [aria-selected="true"] { background-color: #FF6B6B; color: white; }
     [data-testid="stSidebar"] { display: none; }
     .stCamera { transform: scaleX(1); }
+    
+    @media (max-width: 600px) {
+        button, .stButton > button, [data-testid="stCameraInput"] button {
+            min-height: 44px;
+            font-size: 16px;
+            width: 100%;
+        }
+        [data-testid="stSidebar"] { display: none; }
+        [data-testid="column"] {
+            flex: 100% !important;
+            width: 100% !important;
+        }
+        .main .block-container {
+            padding: 1rem;
+        }
+    }
     </style>
 """, unsafe_allow_html=True)
 

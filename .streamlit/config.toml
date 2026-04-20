@@ -1,0 +1,16 @@
+[server]
+maxUploadSize = 10
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#d32f2f"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
