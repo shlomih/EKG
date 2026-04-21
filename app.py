@@ -145,6 +145,29 @@ except ImportError:
 # --- PAGE CONFIG ---
 st.set_page_config(page_title=t("page_title"), layout="wide")
 
+# --- PASSCODE GATE (Beta Access Control) ---
+beta_passcode = st.secrets.get("beta_passcode", None)
+if beta_passcode is not None:
+    if not st.session_state.get("auth_ok", False):
+        st.warning("🔐 Beta Access Required")
+        entered_passcode = st.text_input(
+            "Enter beta passcode:",
+            type="password",
+            key="beta_passcode_input"
+        )
+        if st.button("Unlock"):
+            if entered_passcode == beta_passcode:
+                st.session_state["auth_ok"] = True
+                st.success("Access granted!")
+                st.rerun()
+            else:
+                st.error("Incorrect passcode.")
+        st.stop()
+else:
+    # No passcode configured — local dev mode
+    import logging
+    logging.warning("No beta_passcode configured in st.secrets. Passcode gate is skipped.")
+
 # --- UI STYLING (Hiding Sidebar, Tab Styling) ---
 st.markdown("""
     <style>

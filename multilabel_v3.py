@@ -220,7 +220,7 @@ def load_v3_data():
 
     # Challenge (already 26-class aligned)
     # Reserve 10% as test (fold 20), 5% as val (fold 19), rest as train (fold 0)
-    print("Loading Challenge datasets...")
+    print("Loading Challenge datasets...", flush=True)
     chal_paths, chal_labels26 = load_challenge_multilabel(codes=V3_CODES)
     N_chal = len(chal_paths)
     rng = np.random.default_rng(42)
@@ -234,7 +234,7 @@ def load_v3_data():
     # CODE-15% (optional — only if index exists)
     code15_paths, code15_labels26, code15_folds = [], np.empty((0, N_CLASSES), dtype=np.float32), np.empty(0, dtype=int)
     if CODE15_INDEX.exists():
-        print("Loading CODE-15% dataset...")
+        print("Loading CODE-15% dataset...", flush=True)
         try:
             c15_paths, c15_labels26 = load_code15_multilabel(codes=V3_CODES)
             N_c15 = len(c15_paths)
@@ -335,19 +335,19 @@ def train(batch_size=None, n_epochs=60, patience=12, from_scratch=False):
           + (f" | CODE15-test: {len(c15test_paths)}" if c15test_paths else ""))
 
     # Preload PTB-XL only; Chapman + Challenge + CODE-15% load lazily
-    print("  Pre-loading PTB-XL signals into RAM...")
+    print("  Pre-loading PTB-XL signals into RAM...", flush=True)
     demographics = load_demographics()
     ptbxl_paths  = [p for p in set(train_paths + val_paths + test_paths)
                     if "ptbxl" in p.lower()]
     raw_cache, aux_cache = preload_signals(ptbxl_paths, demographics)
-    print(f"  Cached {len(raw_cache)} PTB-XL signals.")
+    print(f"  Cached {len(raw_cache)} PTB-XL signals.", flush=True)
 
     # CODE-15% demographics cache (age + sex for aux feature indices 8, 9)
     c15_demo_cache = {}
     if CODE15_INDEX.exists():
-        print("  Building CODE-15% demographics cache...")
+        print("  Building CODE-15% demographics cache...", flush=True)
         c15_demo_cache = build_code15_demo_cache(CODE15_INDEX)
-        print(f"  CODE-15% demo cache: {len(c15_demo_cache)} entries")
+        print(f"  CODE-15% demo cache: {len(c15_demo_cache)} entries", flush=True)
 
     def _make_ds(paths, labels, augment):
         ds = V3ECGDataset(paths, labels, raw_cache, aux_cache, augment=augment)

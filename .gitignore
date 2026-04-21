@@ -229,3 +229,7 @@ EKG.zip
 # Database and Drive temp
 ekg_platform.db
 .tmp.driveupload/
+
+# Streamlit secrets (never commit)
+.streamlit/secrets.toml
+
