@@ -118,6 +118,14 @@ def load_challenge_multilabel(
     else:
         challenge_dir = Path(challenge_dir)
 
+    # Handle double-nested tarball extraction: challenge2021/challenge2021/georgia/...
+    # If the expected subfolders aren't directly under challenge_dir but are under
+    # challenge_dir/challenge2021, descend one level.
+    if not any((challenge_dir / ds).exists() for ds in CHALLENGE_DATASETS):
+        nested = challenge_dir / challenge_dir.name
+        if any((nested / ds).exists() for ds in CHALLENGE_DATASETS):
+            challenge_dir = nested
+
     if codes is None:
         codes = V3_CODES
 

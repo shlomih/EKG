@@ -29,10 +29,29 @@ def get_connection():
     return conn
 
 
+_REQUIRED_PATIENT_COLUMNS = {"patient_id", "first_name", "last_name", "id_number",
+                             "age", "sex", "has_pacemaker_icd", "is_athlete",
+                             "is_pregnant", "k_level"}
+
+
 def init_db():
     """Initialize database tables and migrate schema if needed."""
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Check existing patients schema before CREATE IF NOT EXISTS
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='patients'")
+    patients_exists = cursor.fetchone() is not None
+    if patients_exists:
+        cursor.execute("PRAGMA table_info(patients)")
+        existing_cols = {r[1] for r in cursor.fetchall()}
+        if not _REQUIRED_PATIENT_COLUMNS.issubset(existing_cols):
+            # Incompatible old schema — drop all tables and start fresh
+            import logging
+            logging.warning("patients table has incompatible schema; dropping and recreating all tables")
+            for tbl in ("consultations", "analysis_results", "ekg_records", "patients"):
+                cursor.execute(f"DROP TABLE IF EXISTS {tbl}")
+            conn.commit()
 
     # 1. Patient Table -- name + ID for differentiation
     cursor.execute('''
@@ -47,21 +66,12 @@ def init_db():
             is_athlete BOOLEAN DEFAULT 0,
             is_pregnant BOOLEAN DEFAULT 0,
             k_level FLOAT DEFAULT 4.0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
-    # Ensure updated_at exists for older schemas
-    cursor.execute("PRAGMA table_info(patients)")
-    columns = [r[1] for r in cursor.fetchall()]
-    if 'updated_at' not in columns:
-        cursor.execute("ALTER TABLE patients ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
-    # Ensure created_at exists for older schema
-    if 'created_at' not in columns:
-        cursor.execute("ALTER TABLE patients ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
-    conn.commit()  # Commit schema migrations before proceeding
+    conn.commit()  # Commit schema before proceeding
 
     # 2. EKG Record Table (Provenance)
     cursor.execute('''

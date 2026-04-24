@@ -566,6 +566,12 @@ def _print_results(model, loader, device, title="Test Results"):
             logits = model(sig, aux)
             all_probs.append(torch.sigmoid(logits.float()).detach().cpu().numpy())
             all_labels.append(lbl.detach().cpu().numpy())
+    if not all_probs:
+        print(f"\n{'=' * 60}")
+        print(f"  V3 Model - {title}")
+        print(f"{'=' * 60}")
+        print(f"  (skipped: 0 records in this split)")
+        return
     probs  = np.concatenate(all_probs,  axis=0)
     labels = np.concatenate(all_labels, axis=0).astype(int)
     preds  = (probs >= 0.5).astype(int)

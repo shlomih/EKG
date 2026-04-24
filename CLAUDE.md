@@ -7,6 +7,22 @@ Training happens on **Google Colab** (GPU/TPU via TPU v6e). Local CPU is fallbac
 Python 3.14 at `C:\Users\osnat\AppData\Local\Programs\Python\Python314\python.exe`.
 EKG dir syncs to Google Drive automatically — any file change is available in Colab immediately.
 
+### Google Drive Structure (as seen from Colab)
+
+All paths are under `/content/drive/MyDrive/EKG/` — **not** `EKG_models`, **not** `datasets` at root.
+
+| Drive path | SSD path (after Cell 1) | Contents |
+|------------|------------------------|----------|
+| `MyDrive/EKG/` | `/content/` | Training scripts (multilabel_v3.py, dataset_*.py) |
+| `MyDrive/EKG/models/` | `/content/models/` | Model checkpoints (`ecg_multilabel_v3_best.pt`, etc.) |
+| `MyDrive/EKG/ekg_datasets/ptbxl/` | `/content/ekg_datasets/ptbxl` → symlink to Drive | PTB-XL (~2.6 GB, 21,799 .dat) |
+| `MyDrive/EKG/ekg_datasets/chapman/` | `/content/ekg_datasets/chapman` → symlink to Drive | Chapman (~5.4 GB, 45,152 .mat) |
+| `MyDrive/EKG/ekg_datasets/challenge2021/` | `/content/ekg_datasets/challenge2021` → symlink to Drive | Challenge 2021 (~7.1 GB, 54,346 .mat) |
+| `MyDrive/EKG/ekg_datasets/ptb/` | `/content/ekg_datasets/ptb` → symlink to Drive | PTB (~1 GB, optional) |
+| `MyDrive/EKG/ekg_datasets/code15/raw/exams_part*.hdf5` | `/content/ekg_datasets/code15/raw/` → **full copy on SSD** | CODE-15% HDF5 parts (18 × ~3.9 GB = ~64 GB) |
+
+**Key:** CODE-15% is fully copied to SSD by Cell 1 (~15 min). Small datasets stay symlinked to Drive — `multilabel_v3.py` preloads them into RAM via `preload_signals()` at startup.
+
 ---
 
 ## Current Phase: V3.2b — 12/18 CODE-15% parts trained, need full 18/18

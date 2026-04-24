@@ -146,7 +146,10 @@ except ImportError:
 st.set_page_config(page_title=t("page_title"), layout="wide")
 
 # --- PASSCODE GATE (Beta Access Control) ---
-beta_passcode = st.secrets.get("beta_passcode", None)
+try:
+    beta_passcode = st.secrets.get("beta_passcode", None)
+except Exception:
+    beta_passcode = None
 if beta_passcode is not None:
     if not st.session_state.get("auth_ok", False):
         st.warning("🔐 Beta Access Required")
@@ -214,6 +217,16 @@ st.title(t("app_title"))
 
 st.header(t("patient_profile_header"))
 st.caption(t("patient_profile_caption"))
+
+# Research-use disclaimer (dismissible for the session)
+if not st.session_state.get("disclaimer_ack", False):
+    col_disc1, col_disc2 = st.columns([11, 1])
+    with col_disc1:
+        st.warning("Research use only. Not a medical device. Do not use for diagnosis. Do not upload real patient data without consent.")
+    with col_disc2:
+        if st.button("Got it", key="disclaimer_got_it_btn"):
+            st.session_state["disclaimer_ack"] = True
+            st.rerun()
 
 # Patient identity row
 col_id1, col_id2, col_id3 = st.columns([2, 2, 2])
@@ -506,13 +519,30 @@ with tab_scan:
     img_bytes = None
 
     if scan_mode == _camera_opt:
+        st.info("📱 Hold phone **landscape** and use the **back camera** (flip icon 🔄 in the camera widget). Scan the **wave trace section**, not the measurement text box.")
         cam_buf = st.camera_input(t("scanner_label"))
         if cam_buf:
             img_bytes = cam_buf.getvalue()
     else:
+        st.info("📱 On mobile: tap the uploader and pick **Camera** (opens back camera) for a fresh photo, or choose a clean scan from your gallery. **Landscape** orientation with the full ECG paper width visible works best.")
         uploaded = st.file_uploader(
             t("upload_label"),
             type=["png", "jpg", "jpeg", "bmp", "tiff"],
+        )
+        # Force back-camera on mobile: patch file-input with capture="environment"
+        import streamlit.components.v1 as _components
+        _components.html(
+            """
+            <script>
+            setTimeout(() => {
+              try {
+                const inputs = window.parent.document.querySelectorAll('input[type="file"][accept*="image"]');
+                inputs.forEach(i => i.setAttribute('capture', 'environment'));
+              } catch (e) { /* cross-origin blocked — no-op */ }
+            }, 500);
+            </script>
+            """,
+            height=0,
         )
         if uploaded:
             img_bytes = uploaded.getvalue()
@@ -549,17 +579,14 @@ with tab_scan:
         else:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            h = gray.shape[0]
-            y_start = h // 4
-            y_end = 3 * h // 4
-            mid = gray[y_start:y_end, :]
-
             # Fallback: brightness-based extraction (pixel units, uncalibrated)
-            raw_sig = (255 - np.mean(mid, axis=0)) / 100.0
+            raw_sig = (255 - np.mean(gray, axis=0)) / 100.0
             smoothed = np.convolve(raw_sig, np.ones(5) / 5, mode="same")
             _calib_info = None
+            _extraction_error = None
 
             # Calibrated OpenCV digitization pipeline
+            tmp_path = None
             try:
                 from digitization_pipeline import extract_signal_from_image
                 import tempfile
@@ -571,11 +598,21 @@ with tab_scan:
                     paper_speed=_paper_speed,
                     mm_per_mv=_mm_per_mv,
                 )
-                os.unlink(tmp_path)
                 smoothed   = _result["signal"]
                 _calib_info = _result
-            except Exception:
-                pass  # fall back to brightness-based extraction
+            except Exception as _ex:
+                _extraction_error = str(_ex)
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try: os.unlink(tmp_path)
+                    except Exception: pass
+
+            if _extraction_error:
+                st.warning(
+                    f"⚠️ Calibrated extraction failed: {_extraction_error[:180]}.\n\n"
+                    "Falling back to raw brightness — results will likely be unreliable. "
+                    "Retake with better lighting and full ECG paper visible."
+                )
 
             # Calibrated pipeline already resamples to 500 Hz.
             # Fallback path still needs resampling (pixel units → 5000 samples).
@@ -583,31 +620,66 @@ with tab_scan:
                 from scipy.signal import resample as _resample
                 smoothed = _resample(smoothed, 500 * 10)
 
-            # Show calibration status
+            # Show calibration status (with derived fs — lets user sanity-check time axis)
             if _calib_info:
                 px_x, px_y = _calib_info["px_per_mm"]
+                fs_native = _calib_info.get("actual_fs", 0.0)
+                n_rows = _calib_info.get("n_rows_found", 1)
+                row_info = f" — {n_rows} lead rows detected, analysing best row" if n_rows > 1 else ""
+                fs_info = f" | source fs≈{fs_native:.0f} Hz"
                 if px_x and px_y:
                     st.caption(t("calib_detected",
                         speed=_paper_speed, gain=_mm_per_mv,
                         px_x=px_x, px_y=px_y,
                         quality=_calib_info['quality'],
-                    ))
+                    ) + fs_info + row_info)
                 else:
                     st.caption(t("calib_no_grid",
                         speed=_paper_speed, gain=_mm_per_mv,
                         quality=_calib_info['quality'],
-                    ))
+                    ) + fs_info + row_info)
             else:
                 st.caption(t("calib_fallback"))
 
-            st.session_state.signal = smoothed
-            st.session_state.fs = 500
+            # Prefer the landscape-rotated image for display (auto-rotate may have been applied)
+            _display_img = (_calib_info.get("image_landscape_rgb") if _calib_info is not None
+                            else cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=t("input_image_caption"), width='stretch')
+            # Block low-quality scans — showing clinical findings from noisy input is worse than no result
+            _quality = _calib_info.get("quality", 0.0) if _calib_info else 0.0
+            if _calib_info and _quality < 0.4:
+                st.error(
+                    f"⚠️ Scan quality too low ({_quality:.0%}) — please retake.\n\n"
+                    "• Ensure good lighting — no shadows across the paper\n"
+                    "• Hold phone parallel to the paper, no angle\n"
+                    "• Fill the frame with waveform traces, not the text box\n"
+                    "• Use landscape orientation"
+                )
+                st.session_state.pop("signal", None)
+                st.image(_display_img, caption=t("input_image_caption"), width='stretch')
+            else:
+                st.session_state.signal = smoothed
+                st.session_state.fs = 500
 
-            sig_duration = len(smoothed) / 500
-            if sig_duration < 3:
-                st.warning(t("signal_too_short_scan", dur=sig_duration, n=len(smoothed)))
+                st.image(_display_img, caption=t("input_image_caption"), width='stretch')
+
+                # Show the exact lead-row strip that was analysed so the user can verify
+                _preview = _calib_info.get("preview_strip_rgb") if _calib_info else None
+                if _preview is not None:
+                    n_rows = _calib_info.get("n_rows_found", 1)
+                    st.image(
+                        _preview,
+                        caption=f"Lead row actually analysed (selected from {n_rows} detected)",
+                        width='stretch',
+                    )
+
+                sig_duration = len(smoothed) / 500
+                if sig_duration < 3:
+                    st.warning(
+                        f"Signal is only {sig_duration:.1f}s ({len(smoothed)} samples) — need at least 3s. "
+                        "Make sure the ECG waveform traces (not the text box) fill the frame, "
+                        "and hold the phone in **landscape** orientation."
+                    )
 
 with tab_data:
     if 'current_path' not in st.session_state:

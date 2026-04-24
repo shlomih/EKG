@@ -17,9 +17,11 @@ Usage:
     leads = extract_multi_lead("12_lead_scan.png")
 """
 
+from fractions import Fraction
+
 import cv2
 import numpy as np
-from scipy.signal import butter, filtfilt, find_peaks, resample
+from scipy.signal import butter, filtfilt, find_peaks, resample_poly
 
 # Standard ECG paper calibration constants
 # Small grid square = 1 mm × 1 mm
@@ -175,16 +177,78 @@ def _remove_baseline_drift(signal, fs=500, cutoff=0.5):
         return signal - np.mean(signal)
 
 
+def _lowpass_40hz(signal, fs):
+    # Anything above 40 Hz in a photo-reconstructed trace is pixel-quantization
+    # jitter, not physiology — DWT delineation misreads it as spurious features.
+    if len(signal) < 20 or fs < 90:
+        return signal
+    nyq = fs / 2
+    b, a = butter(4, 40.0 / nyq, btype='low')
+    try:
+        return filtfilt(b, a, signal)
+    except Exception:
+        return signal
+
+
+def _detect_lead_rows(trace_binary, min_row_height_ratio=0.05):
+    """
+    Find horizontal bands where ECG traces exist.
+    Returns list of (y_start, y_end) tuples, one per detected lead row.
+    """
+    from scipy.ndimage import uniform_filter1d
+    rows = trace_binary.shape[0]
+    row_sum = trace_binary.sum(axis=1).astype(float)
+    smoothed = uniform_filter1d(row_sum, size=max(5, rows // 40))
+    peak = smoothed.max()
+    if peak == 0:
+        return []
+    in_band = smoothed > peak * 0.10
+    bands = []
+    start = None
+    for i, v in enumerate(in_band):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            if (i - start) >= rows * min_row_height_ratio:
+                bands.append((start, i))
+            start = None
+    if start is not None and (rows - start) >= rows * min_row_height_ratio:
+        bands.append((start, rows))
+    return bands
+
+
+def _select_best_row(trace_binary, bands):
+    """
+    Select the best single lead row to analyze.
+    Scores by trace coverage and height (height bonus favors the wide rhythm strip).
+    Returns (y_start, y_end) of the best band.
+    """
+    rows = trace_binary.shape[0]
+    best, best_score = bands[0], -1.0
+    for start, end in bands:
+        strip = trace_binary[start:end, :]
+        coverage = float((strip.sum(axis=0) > 0).mean())
+        width_bonus = (end - start) / rows
+        # Bottom-preference: the rhythm strip is always at the bottom of the page
+        bottom_bonus = (start + end) / (2.0 * rows)  # 0 at top, 1 at bottom
+        # Coverage dominates; width and position break ties between similar-coverage bands.
+        score = coverage * 0.80 + width_bonus * 0.10 + bottom_bonus * 0.10
+        if score > best_score:
+            best_score = score
+            best = (start, end)
+    return best
+
+
 def _compute_quality_score(trace_binary):
     """
     Estimate signal extraction quality (0-1).
-    Based on: column coverage, trace continuity, noise level.
+    Based on: column coverage, trace continuity, column-to-column jitter.
     """
     rows, cols = trace_binary.shape
 
     # Column coverage: what fraction of columns have trace pixels
     has_trace = np.array([np.any(trace_binary[:, x] > 0) for x in range(cols)])
-    coverage = np.mean(has_trace)
+    coverage = float(np.mean(has_trace))
 
     # Continuity: what fraction of columns have a clean single-cluster trace
     clean_cols = 0
@@ -196,7 +260,24 @@ def _compute_quality_score(trace_binary):
                 clean_cols += 1
     continuity = clean_cols / cols if cols > 0 else 0
 
-    return round(min(1.0, (coverage * 0.5 + continuity * 0.5)), 3)
+    # Jitter: median column-to-column step as a fraction of signal range.
+    # Clean ECG baseline is near-flat between events (ratio <1%); phone-photo
+    # sharp-toothed noise moves by several % every column. Catches scans that
+    # pass coverage + continuity but produce unusable waveforms.
+    y_by_col = _trace_to_signal(trace_binary, use_weighted=True) if cols > 0 else np.array([])
+    if len(y_by_col) > 1:
+        y_range = float(np.ptp(y_by_col))
+        if y_range > 1e-6:
+            med_diff = float(np.median(np.abs(np.diff(y_by_col))))
+            jitter_ratio = med_diff / y_range
+            # ≤1% of range → full credit; ≥6% → zero credit; linear in between.
+            jitter_score = max(0.0, min(1.0, 1.0 - (jitter_ratio - 0.01) / 0.05))
+        else:
+            jitter_score = 0.0  # flat signal — useless
+    else:
+        jitter_score = 0.0
+
+    return round(min(1.0, coverage * 0.4 + continuity * 0.3 + jitter_score * 0.3), 3)
 
 
 def extract_signal_from_image(image_path,
@@ -223,7 +304,15 @@ def extract_signal_from_image(image_path,
     if img is None:
         raise FileNotFoundError(f"Image not found: {image_path}")
 
+    # Auto-rotate portrait to landscape — ECG paper is always wider than tall
+    if img.shape[0] > img.shape[1]:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # CLAHE: boost local contrast for phone-camera images before thresholding
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
 
     # Detect grid
     grid_mask = _detect_grid_mask(img)
@@ -233,7 +322,36 @@ def extract_signal_from_image(image_path,
 
     # Extract trace (returns Y-pixel positions, inverted, centered at 0)
     trace = _extract_trace(gray, grid_mask)
+
+    # Auto-select one lead row — prevents mixing signals from multiple rows
+    bands = _detect_lead_rows(trace)
+    n_rows_found = len(bands)
+    selected_row = None
+    if len(bands) > 1:
+        row_start, row_end = _select_best_row(trace, bands)
+        pad = 8
+        row_start = max(0, row_start - pad)
+        row_end = min(gray.shape[0], row_end + pad)
+        gray      = gray[row_start:row_end, :]
+        trace     = trace[row_start:row_end, :]
+        grid_mask = grid_mask[row_start:row_end, :]
+        selected_row = (row_start, row_end)
+
+    # Crop preview strip BEFORE text-block masking so user sees the actual lead content
+    preview_strip_rgb = None
+    if selected_row is not None:
+        r0, r1 = selected_row
+        preview_strip_rgb = cv2.cvtColor(img[r0:r1, :], cv2.COLOR_BGR2RGB)
+
+    # Mask left text block (FX-8200 and similar machines print measurements at left edge)
+    text_cols = int(trace.shape[1] * 0.18)
+    if text_cols > 0:
+        trace[:, :text_cols] = 0
+
     signal_px = _trace_to_signal(trace, use_weighted=True)
+
+    if len(signal_px) == 0:
+        raise ValueError("Signal extraction produced empty array — image may be blank or unreadable")
 
     # ── Amplitude calibration ─────────────────────────────────────────────
     # Each pixel in Y corresponds to: 1 / (px_per_mm_y * mm_per_mv) mV
@@ -241,7 +359,7 @@ def extract_signal_from_image(image_path,
         signal_mv = signal_px / (px_per_mm_y * mm_per_mv)
     else:
         # Fallback: assume the full pixel height = ±2 mV (rough estimate)
-        img_height = trace.shape[0]
+        img_height = max(trace.shape[0], 1)  # guard against zero-height strip
         signal_mv = signal_px / (img_height / 4.0)
 
     # ── Time axis calibration ─────────────────────────────────────────────
@@ -253,10 +371,27 @@ def extract_signal_from_image(image_path,
         # Fallback: assume the image width covers 10 seconds
         actual_fs = len(signal_mv) / 10.0
 
-    # Resample to TARGET_FS (500 Hz)
-    target_len = int(round(len(signal_mv) * TARGET_FS / actual_fs))
-    target_len = max(100, target_len)   # safety floor
-    signal_resampled = resample(signal_mv, target_len)
+    if actual_fs <= 0:
+        raise ValueError(
+            f"Could not determine sampling rate (actual_fs={actual_fs}). "
+            "Grid detection failed and fallback could not recover — image may be unreadable."
+        )
+
+    # De-jitter before resampling: one pixel of column-to-column noise at ~250 px/s
+    # source rate lands as >80 Hz garbage after resample, which DWT delineation reads
+    # as fake P/T offsets. Low-pass at 40 Hz in the source-rate domain kills it.
+    signal_mv = _lowpass_40hz(signal_mv, actual_fs)
+
+    # Polyphase resample (time-domain) — FFT resample rings on QRS edges.
+    ratio = Fraction(TARGET_FS, max(1, int(round(actual_fs)))).limit_denominator(1000)
+    signal_resampled = resample_poly(signal_mv, ratio.numerator, ratio.denominator)
+    if len(signal_resampled) < 100:
+        # Safety floor — linear-interp back up if the ratio collapsed the signal
+        signal_resampled = np.interp(
+            np.linspace(0, len(signal_mv) - 1, 100),
+            np.arange(len(signal_mv)),
+            signal_mv,
+        )
 
     # Remove baseline drift (after resampling, fs is now TARGET_FS)
     signal_out = _remove_baseline_drift(signal_resampled, fs=TARGET_FS, cutoff=0.5)
@@ -283,10 +418,14 @@ def extract_signal_from_image(image_path,
         plt.show()
 
     return {
-        "signal":    signal_out,
-        "quality":   quality,
-        "actual_fs": actual_fs,
-        "px_per_mm": (px_per_mm_x, px_per_mm_y),
+        "signal":              signal_out,
+        "quality":             quality,
+        "actual_fs":           actual_fs,
+        "px_per_mm":           (px_per_mm_x, px_per_mm_y),
+        "n_rows_found":        n_rows_found,
+        "selected_row":        selected_row,
+        "image_landscape_rgb": cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+        "preview_strip_rgb":   preview_strip_rgb,
     }
 
 

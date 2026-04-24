@@ -12,9 +12,18 @@ Usage (from app.py):
     from interval_calculator import calculate_intervals, apply_clinical_context
 """
 
+import logging
+import traceback
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore", category=NeuroKitWarning if False else Warning)
+
+logging.basicConfig(
+    filename="ekg_app.log",
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    encoding="utf-8",
+)
 
 # ─────────────────────────────────────────────────────────────
 # Clinical Reference Ranges
@@ -114,11 +123,17 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
         rr_ms = (rr_samples / sampling_rate) * 1000
         results["rr_intervals"] = rr_ms.tolist()
 
-        hr_values = 60000 / rr_ms
+        valid_rr = rr_ms[rr_ms > 0]
+        if len(valid_rr) == 0:
+            results["error"] = "R-peaks detected at identical positions — signal too noisy or flat."
+            return results
+
+        hr_values = 60000 / valid_rr
         results["hr"] = round(float(np.mean(hr_values)), 1)
 
         # RR variability (coefficient of variation — proxy for rhythm regularity)
-        results["hr_variability"] = round(float(np.std(rr_ms) / np.mean(rr_ms)), 3)
+        mean_rr = float(np.mean(valid_rr))
+        results["hr_variability"] = round(float(np.std(valid_rr) / mean_rr), 3) if mean_rr > 0 else None
 
         # ── Step 5: Full waveform delineation ─────────────────
         # This gives us P, Q, R, S, T peak locations
@@ -150,41 +165,52 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                     results["pr"] = round(float(np.median(pr_intervals)), 1)
 
             # ── QRS Duration ───────────────────────────────────
-            # QRS = Q onset to S offset
-            q_onsets   = _safe_to_int_indices(waves.get("ECG_Q_Peaks", []))
-            s_offsets  = _safe_to_int_indices(waves.get("ECG_S_Peaks", []))
+            # DWT outputs ECG_R_Onsets (start of QRS) and ECG_R_Offsets (end of QRS = J-point).
+            # Pair per-beat via R peak — not "first-after", which crosses beats when a
+            # boundary is missed and inflates QRS to hundreds of ms.
+            r_onsets  = _safe_to_int_indices(waves.get("ECG_R_Onsets",  []))
+            r_offsets = _safe_to_int_indices(waves.get("ECG_R_Offsets", []))
 
-            if len(q_onsets) >= 2 and len(s_offsets) >= 2:
+            if len(r_onsets) >= 2 and len(r_offsets) >= 2:
                 qrs_durations = []
-                for q in q_onsets:
-                    candidates = s_offsets[s_offsets > q]
-                    if len(candidates) > 0:
-                        s = candidates[0]
-                        qrs_ms = ((s - q) / sampling_rate) * 1000
-                        if 40 < qrs_ms < 250:  # sanity bounds
-                            qrs_durations.append(qrs_ms)
+                # Beat window: QRS boundary must fall within a short pre/post-R window
+                # (max ~120ms either side of R — wider than any physiological QRS half-width).
+                win = int(0.12 * sampling_rate)
+                for r in r_peaks:
+                    onset_candidates  = r_onsets[(r_onsets  >= r - win) & (r_onsets  <  r)]
+                    offset_candidates = r_offsets[(r_offsets > r)       & (r_offsets <= r + win)]
+                    if len(onset_candidates) == 0 or len(offset_candidates) == 0:
+                        continue
+                    ons = onset_candidates[-1]   # closest onset before R
+                    off = offset_candidates[0]   # closest offset after R
+                    qrs_ms = ((off - ons) / sampling_rate) * 1000
+                    if 40 < qrs_ms < 200:  # physiological bound
+                        qrs_durations.append(qrs_ms)
                 if qrs_durations:
                     results["qrs"] = round(float(np.median(qrs_durations)), 1)
 
             # ── QTc (Bazett's Formula) ─────────────────────────
             # QTc = QT / sqrt(RR in seconds)
-            # Using T-wave offsets for QT measurement
+            # Per-beat T-offset pairing: find the T_Offset that falls between R[i] and
+            # R[i]+0.7*RR. On noisy scans DWT often fires at the T *peak*; bound QT ≥ 280ms
+            # to reject those (T-peak timing is ~240-280ms post-R, well below real QT).
             t_offsets = _safe_to_int_indices(waves.get("ECG_T_Offsets", []))
 
             if len(t_offsets) >= 2:
                 qtc_values = []
                 for i, r in enumerate(r_peaks[:-1]):
-                    # Find T offset after this R
-                    t_candidates = t_offsets[t_offsets > r]
-                    if len(t_candidates) > 0:
-                        t_off = t_candidates[0]
-                        qt_ms = ((t_off - r) / sampling_rate) * 1000
-                        rr_s  = rr_ms[i] / 1000  # RR in seconds for Bazett
-
-                        if 200 < qt_ms < 700 and rr_s > 0:  # sanity bounds
-                            qtc = qt_ms / np.sqrt(rr_s)
-                            if 250 < qtc < 700:  # post-correction sanity
-                                qtc_values.append(qtc)
+                    rr_samples_i = r_peaks[i + 1] - r
+                    max_t_offset = r + int(0.7 * rr_samples_i)
+                    t_candidates = t_offsets[(t_offsets > r) & (t_offsets <= max_t_offset)]
+                    if len(t_candidates) == 0:
+                        continue
+                    t_off = t_candidates[-1]   # last T_offset in the window — most likely the true T-end
+                    qt_ms = ((t_off - r) / sampling_rate) * 1000
+                    rr_s  = rr_ms[i] / 1000
+                    if 280 < qt_ms < 600 and rr_s > 0:  # tighter floor rejects T-peak mis-detection
+                        qtc = qt_ms / np.sqrt(rr_s)
+                        if 300 < qtc < 600:
+                            qtc_values.append(qtc)
 
                 if qtc_values:
                     results["qtc"] = round(float(np.median(qtc_values)), 1)
@@ -197,6 +223,7 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
             )
 
     except Exception as e:
+        logging.error("calculate_intervals failed\n%s", traceback.format_exc())
         results["error"] = f"Analysis failed: {str(e)}"
 
     return results

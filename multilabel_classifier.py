@@ -192,13 +192,31 @@ def load_multilabel_dataset(base_path: str = "ekg_datasets/ptbxl"):
     Only keeps records that have at least one of the 12 target codes.
     """
     base = Path(base_path)
-    meta = pd.read_csv(base / "ptbxl_database.csv", index_col="ecg_id")
+    
+    # Handle both local and Colab structures:
+    # Local: ekg_datasets/ptbxl/ptbxl_database.csv
+    # Colab: ekg_datasets/ptbxl/ptbxl/ptbxl_database.csv
+    csv_path = base / "ptbxl_database.csv"
+    if not csv_path.exists():
+        csv_path = base / "ptbxl" / "ptbxl_database.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"PTB-XL database CSV not found at {base / 'ptbxl_database.csv'} "
+            f"or {base / 'ptbxl' / 'ptbxl_database.csv'}. "
+            f"Check that PTB-XL dataset is extracted to {base_path}."
+        )
+    
+    meta = pd.read_csv(csv_path, index_col="ecg_id")
     meta["scp_codes"] = meta["scp_codes"].apply(ast.literal_eval)
 
     print(f"  Indexing {len(meta)} records for multi-label...")
 
     paths, label_rows, folds = [], [], []
     skipped_no_label, skipped_no_file = 0, 0
+    
+    # Use the directory containing the CSV as the base for resolving record paths
+    # This handles both local (ekg_datasets/ptbxl/) and Colab (ekg_datasets/ptbxl/ptbxl/) structures
+    csv_dir = csv_path.parent
 
     for ecg_id, row in meta.iterrows():
         vec = extract_multilabel_vector(row["scp_codes"])
@@ -206,7 +224,7 @@ def load_multilabel_dataset(base_path: str = "ekg_datasets/ptbxl"):
             skipped_no_label += 1
             continue
 
-        rec_path = str(base / row["filename_hr"])
+        rec_path = str(csv_dir / row["filename_hr"])
         if not os.path.exists(rec_path + ".dat"):
             skipped_no_file += 1
             continue
@@ -281,10 +299,20 @@ def preload_signals(paths, demographics):
 def load_demographics(base_path="ekg_datasets/ptbxl"):
     """Returns dict: path -> (sex_raw, age) -- same as cnn_classifier logic."""
     base = Path(base_path)
-    meta = pd.read_csv(base / "ptbxl_database.csv", index_col="ecg_id")
+    # Match load_multilabel_dataset: handle both flat and nested layouts.
+    csv_path = base / "ptbxl_database.csv"
+    if not csv_path.exists():
+        csv_path = base / "ptbxl" / "ptbxl_database.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"PTB-XL database CSV not found at {base / 'ptbxl_database.csv'} "
+            f"or {base / 'ptbxl' / 'ptbxl_database.csv'}."
+        )
+    csv_dir = csv_path.parent
+    meta = pd.read_csv(csv_path, index_col="ecg_id")
     demo = {}
     for ecg_id, row in meta.iterrows():
-        path = str(base / row["filename_hr"])
+        path = str(csv_dir / row["filename_hr"])
         sex  = 0 if pd.isna(row.get("sex", 0)) else int(row.get("sex", 0))
         age  = 50 if pd.isna(row.get("age", 50)) else float(row.get("age", 50))
         demo[path] = (sex, age)
