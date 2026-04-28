@@ -283,31 +283,70 @@ def _detect_lead_rows(trace_binary, min_row_height_ratio=0.05):
     return refined
 
 
+def _band_traceness(trace_binary, start, end):
+    """
+    Return a 0-1 score of how trace-like a horizontal band is.
+
+    Real ECG bands have:
+      - high column coverage (most columns have at least one trace pixel)
+      - thin per-column trace (a few px tall, not a wide blob)
+    Wrist-rest / paper-edge / wood-texture bands have low coverage or wide
+    blobs. This is the cheapest discriminator that doesn't require physiology.
+    """
+    strip = trace_binary[start:end, :]
+    rows_b, cols_b = strip.shape
+    if rows_b == 0 or cols_b == 0:
+        return 0.0
+    coverage = float((strip.sum(axis=0) > 0).mean())
+    # Per-column trace thickness (how many pixels deep is the trace).
+    # Real ECG: 2-6 px out of ~150 px row height (≤5%). Background noise
+    # blobs cover much more of each column.
+    thicknesses = [
+        int(np.sum(strip[:, x] > 0)) for x in range(0, cols_b, max(1, cols_b // 200))
+    ]
+    if not thicknesses:
+        return 0.0
+    median_thickness_ratio = float(np.median(thicknesses)) / rows_b
+    # Score: coverage rewarded, thickness penalized
+    thin_score = max(0.0, 1.0 - median_thickness_ratio / 0.20)
+    return coverage * 0.5 + thin_score * 0.5
+
+
 def _select_best_row(trace_binary, bands):
     """
     Select the best single lead row to analyze.
-    Strongly biased toward the bottom-most band with reasonable coverage —
-    standard 12-lead paper layouts always print the rhythm strip at the bottom,
-    and the rhythm strip is what gives clean HR/PR/QRS/QT measurements (the
-    cell rows above are 4 short ~2.5s clips of different leads spliced
-    side-by-side, which produce step jumps in the extracted 1D signal).
-    Returns (y_start, y_end) of the best band.
+
+    Trace-likeness dominates: a high-coverage thin-trace band beats a
+    big band of wood-texture noise (which has high column "coverage" but
+    very thick per-column blobs). The tiebreak is moderate height (~150 px
+    is a typical ECG cell row at common photo resolutions; much taller
+    bands are usually noise/text regions, much shorter ones are
+    separator strips between rows).
     """
     rows = trace_binary.shape[0]
-    best, best_score = bands[0], -1.0
-    for start, end in bands:
-        strip = trace_binary[start:end, :]
-        coverage = float((strip.sum(axis=0) > 0).mean())
-        # Bottom-preference: the rhythm strip is always at the bottom of the page.
-        bottom_bonus = (start + end) / (2.0 * rows)  # 0 at top, 1 at bottom
-        # Bottom-bias dominates so the rhythm strip wins even when cell rows have
-        # comparable column-coverage. Coverage stays as a guard against picking a
-        # near-empty band that happens to be at the bottom.
-        score = coverage * 0.40 + bottom_bonus * 0.60
-        if score > best_score:
-            best_score = score
-            best = (start, end)
-    return best
+    min_acceptable_height = max(60, rows // 30)
+    target_height = max(100, rows // 12)   # rough rhythm-strip / lead-row height
+    candidates = []
+    for s, e in bands:
+        height = e - s
+        if height < min_acceptable_height:
+            continue
+        tr = _band_traceness(trace_binary, s, e)
+        if tr < 0.30:
+            continue   # band looks like noise, not ECG
+        # Height fit: peak at target, falls off in both directions.
+        # 1.0 at target_height, 0.0 at 4× target or 0.25× target.
+        ratio = height / target_height
+        if ratio < 1:
+            height_fit = ratio
+        else:
+            height_fit = max(0.0, 2.0 - ratio) / 1.0  # 1.0 at ratio=1, 0 at ratio=2
+        bottom_bonus = (s + e) / (2.0 * rows)
+        score = tr * 0.55 + height_fit * 0.30 + bottom_bonus * 0.15
+        candidates.append(((s, e), score))
+    if not candidates:
+        return bands[0]
+    return max(candidates, key=lambda t: t[1])[0]
 
 
 def _compute_quality_score(trace_binary):
@@ -408,24 +447,35 @@ def _detect_paper_region(img_bgr):
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
     paper_blocks = cv2.morphologyEx(paper_blocks, cv2.MORPH_CLOSE, kernel)
 
-    # Largest connected blob in the down-sampled density map.
+    # Find all paper-block components and take the bounding box of every
+    # component that is at least ~20% of the largest one. The largest-only
+    # approach loses fragments of the same paper (label/header/footer
+    # sections can disconnect from the dense trace region by text rows
+    # that fail the density gate), shrinking the crop to a sliver of the
+    # actual paper. Including the smaller fragments restores the full
+    # paper extent while still ignoring tiny background noise blobs.
     nl, lbls, stats, _ = cv2.connectedComponentsWithStats(paper_blocks, 8)
     if nl <= 1:
         return img_bgr, None
     areas = stats[1:, cv2.CC_STAT_AREA]
-    biggest = int(areas.argmax()) + 1
-    if stats[biggest, cv2.CC_STAT_AREA] < small_h * small_w * 0.03:
+    biggest_area = int(areas.max())
+    if biggest_area < small_h * small_w * 0.03:
         return img_bgr, None
 
-    # Use the connected-component bbox directly — axis-aligned, no warp.
-    # A perspective-warped minAreaRect adds rotation skew that fights with
-    # A.6's orientation logic; an axis-aligned crop is a clean handoff to
-    # A.6 (which then handles 0/90/180/270° label-up resolution).
-    bx, by, bw, bh, _ = stats[biggest]
+    keep = np.where(areas >= biggest_area * 0.20)[0] + 1
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for k in keep:
+        bx_k, by_k, bw_k, bh_k, _ = stats[k]
+        xs0.append(bx_k); ys0.append(by_k)
+        xs1.append(bx_k + bw_k); ys1.append(by_k + bh_k)
+    bx, by = min(xs0), min(ys0)
+    bx_end, by_end = max(xs1), max(ys1)
+
+    # Axis-aligned crop, no warp — A.6's orientation logic handles rotation.
     x0 = bx * block
     y0 = by * block
-    x1 = min(w, (bx + bw) * block)
-    y1 = min(h, (by + bh) * block)
+    x1 = min(w, bx_end * block)
+    y1 = min(h, by_end * block)
     if (x1 - x0) < 100 or (y1 - y0) < 50:
         return img_bgr, None
 
@@ -473,26 +523,39 @@ def _resolve_orientation(paper_bgr):
     Returns the paper rotated to canonical orientation (R-peaks up,
     trace flowing left-to-right).
     """
-    candidates = {
-        0:   paper_bgr,
-        90:  cv2.rotate(paper_bgr, cv2.ROTATE_90_CLOCKWISE),
-        180: cv2.rotate(paper_bgr, cv2.ROTATE_180),
-        270: cv2.rotate(paper_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE),
-    }
-    # Score every rotation; do NOT pre-filter portrait shapes — the
-    # cropped paper region can be roughly square (FX-8200 reference is
-    # 629x703 ≈ square), in which case every rotation is technically
-    # portrait or landscape and pre-filtering would drop the correct
-    # candidate. The score itself penalizes wrong orientations: wrong
-    # rotations produce vertical "trace" pixels whose median Y stays
-    # near the band centre, giving low high-low scores.
-    best_angle, best_score = 0, -np.inf
-    for angle, candidate in candidates.items():
-        score = _orientation_score(candidate)
-        if score > best_score:
-            best_score = score
-            best_angle = angle
-    return candidates[best_angle]
+    # Step 1: force landscape — ECG paper is canonically wider than tall
+    # (paper roll runs left-to-right, time on the X axis). For roughly
+    # square crops we still want landscape; tie-break by trying both and
+    # picking the higher-scored 180° pair.
+    h, w = paper_bgr.shape[:2]
+    if h > w:
+        # Rotate 90° (either direction) to make landscape; we then resolve
+        # which 90° was right via the 0°-vs-180° score below.
+        landscape = cv2.rotate(paper_bgr, cv2.ROTATE_90_CLOCKWISE)
+    else:
+        landscape = paper_bgr
+
+    # Step 2: resolve 0°/180° flip — pick the orientation that gives a higher
+    # _orientation_score (R-peaks deflecting upward).
+    flipped = cv2.rotate(landscape, cv2.ROTATE_180)
+    score_a = _orientation_score(landscape)
+    score_b = _orientation_score(flipped)
+
+    # Step 3: also try the OTHER 90° direction (if input was portrait, both
+    # rotations of the original portrait can produce landscape — only one
+    # is correct). Score that pair too and keep the global max.
+    if h > w:
+        landscape_alt = cv2.rotate(paper_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        flipped_alt = cv2.rotate(landscape_alt, cv2.ROTATE_180)
+        score_c = _orientation_score(landscape_alt)
+        score_d = _orientation_score(flipped_alt)
+    else:
+        landscape_alt = flipped_alt = landscape  # unused
+        score_c = score_d = -np.inf
+
+    scores = [(score_a, landscape), (score_b, flipped),
+              (score_c, landscape_alt), (score_d, flipped_alt)]
+    return max(scores, key=lambda t: t[0])[1]
 
 
 def _orientation_score(paper_bgr):
@@ -563,14 +626,14 @@ def extract_signal_from_image(image_path,
     """
     img_full = _load_image_exif_aware(image_path)
 
-    # A.5 — segment the paper region from background (desk, wrist rest, hands).
-    # If detection fails, fall back to using the whole image.
-    paper_img, paper_bbox = _detect_paper_region(img_full)
-
     # A.6 — resolve which of the 4 cardinal rotations puts the paper
-    # right-side-up (R-peaks pointing up, trace flowing left-to-right).
-    # This subsumes the old shape-based "if portrait, rotate 90° CW" check.
-    img = _resolve_orientation(paper_img)
+    # right-side-up. Operates on the whole image, which is fine because
+    # _resolve_orientation only samples the bottom 30% for its scoring.
+    # Paper segmentation (A.5) is currently disabled as a forward step:
+    # the bbox-based crop was dropping content the trace pipeline needs
+    # (HR84 was getting only 2.4 s of signal, below the 3 s DWT minimum).
+    # Background filtering happens later via _band_traceness instead.
+    img = _resolve_orientation(img_full)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
