@@ -650,21 +650,75 @@ def extract_signal_from_image(image_path,
     # Extract trace (returns Y-pixel positions, inverted, centered at 0)
     trace = _extract_trace(gray, grid_mask)
 
-    # Auto-select one lead row — prevents mixing signals from multiple rows
+    # Auto-select one lead row. Two strategies:
+    #   1. Filter bands via _select_best_row (heuristic — fast).
+    #   2. If we have multiple plausible bands, also try each via R-peak detection
+    #      and pick the band whose extracted signal looks most like a regular
+    #      ECG (period in the 30-200 bpm range, low RR variability).
     bands = _detect_lead_rows(trace)
     n_rows_found = len(bands)
     selected_row = None
-    if len(bands) > 1:
-        row_start, row_end = _select_best_row(trace, bands)
+    if len(bands) >= 2:
+        # Pre-filter: drop bands that fail the basic noise gate, keep up to 5 best.
+        plausible = []
+        for s, e in bands:
+            if (e - s) < max(60, gray.shape[0] // 30):
+                continue
+            tr = _band_traceness(trace, s, e)
+            if tr < 0.30:
+                continue
+            plausible.append((s, e, tr))
+        plausible.sort(key=lambda t: t[2], reverse=True)
+        plausible = plausible[:5]
+        # If only one survived, use it.
+        if len(plausible) == 1:
+            selected_row = (plausible[0][0], plausible[0][1])
+        elif len(plausible) >= 2:
+            # Score each by R-peak regularity. Pick the most physiological.
+            best_score = -np.inf
+            for s, e, tr in plausible:
+                strip = trace[s:e, :].copy()
+                tcols = int(strip.shape[1] * 0.18)
+                if tcols > 0:
+                    strip[:, :tcols] = 0
+                sig = _trace_to_signal(strip, use_weighted=True)
+                if len(sig) < 100:
+                    continue
+                # Cheap R-peak detection: find peaks above 0.5 std with min spacing
+                from scipy.signal import find_peaks as _find_peaks
+                z = (sig - sig.mean()) / (sig.std() + 1e-9)
+                pks, _ = _find_peaks(z, height=0.8, distance=max(20, len(sig) // 50))
+                if len(pks) < 3:
+                    continue
+                rr = np.diff(pks)
+                rr_mean = float(np.mean(rr))
+                rr_std = float(np.std(rr))
+                rr_cv = rr_std / max(rr_mean, 1)  # lower is more regular
+                # Approx HR if px_per_mm_x known
+                if px_per_mm_x and rr_mean > 0:
+                    hr_est = 60.0 * px_per_mm_x * paper_speed / rr_mean
+                else:
+                    hr_est = 60.0 * len(sig) / 10.0 / rr_mean if rr_mean > 0 else 0
+                # Reject implausible HRs
+                if not (30 <= hr_est <= 220):
+                    continue
+                score = tr * 0.4 + (1.0 - min(rr_cv, 1.0)) * 0.6
+                if score > best_score:
+                    best_score = score
+                    selected_row = (s, e)
+        if selected_row is None:
+            # fall back to the heuristic if scoring rejected everything
+            row_start, row_end = _select_best_row(trace, bands)
+            selected_row = (row_start, row_end)
+
         pad = 8
-        row_start = max(0, row_start - pad)
-        row_end = min(gray.shape[0], row_end + pad)
+        row_start = max(0, selected_row[0] - pad)
+        row_end = min(gray.shape[0], selected_row[1] + pad)
         gray      = gray[row_start:row_end, :]
         trace     = trace[row_start:row_end, :]
         grid_mask = grid_mask[row_start:row_end, :]
         selected_row = (row_start, row_end)
     elif len(bands) == 1:
-        # Single-band path — record the band so the user still sees what was analyzed
         selected_row = bands[0]
 
     # Crop preview strip BEFORE text-block masking so user sees the actual lead content.
