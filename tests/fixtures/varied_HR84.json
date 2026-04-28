@@ -1,0 +1,21 @@
+{
+    "description": "FX-8200, HR=84, normal sinus rhythm, narrow QRS, normal QTc. Standard adult ECG.",
+    "machine": "FX-8200",
+    "paper_speed": 25,
+    "mm_per_mv": 10,
+    "ground_truth": {
+        "hr":  84,
+        "pr":  140,
+        "qrs": 93,
+        "qtc": 402,
+        "axis": 59
+    },
+    "tolerance": {
+        "hr_bpm": 4,
+        "pr_ms":  40,
+        "qrs_ms": 50,
+        "qtc_ms": 50
+    },
+    "min_quality": 0.4,
+    "_notes": "Truth values transcribed from machine printout (varied_HR84_reference.jpg). QTc here is Bazett (QTcB=0.402). Beat=11. Marked '#Unconfirmed report#' on the printout."
+}

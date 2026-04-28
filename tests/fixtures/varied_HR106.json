@@ -1,0 +1,21 @@
+{
+    "description": "FX-8200, HR=106 (mild tachycardia), normal sinus rhythm. Printed report dated 4-4-2026.",
+    "machine": "FX-8200",
+    "paper_speed": 25,
+    "mm_per_mv": 10,
+    "ground_truth": {
+        "hr":  106,
+        "pr":  138,
+        "qrs": 93,
+        "qtc": 439,
+        "axis": 44
+    },
+    "tolerance": {
+        "hr_bpm": 5,
+        "pr_ms":  40,
+        "qrs_ms": 50,
+        "qtc_ms": 60
+    },
+    "min_quality": 0.4,
+    "_notes": "Truth values transcribed from machine printout (varied_HR106_reference.jpg). QTc here is Bazett (QTcB=0.439), matching interval_calculator.py's correction formula. Beat=3."
+}

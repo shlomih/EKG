@@ -1,0 +1,21 @@
+{
+    "description": "FX-8200, HR=167 (marked tachycardia), wide QRS=148ms, prolonged QTcB=533. Likely SVT-with-aberrancy or VT — PR unmeasurable on the printout (shown as ****).",
+    "machine": "FX-8200-V51-01-TG02-03",
+    "paper_speed": 25,
+    "mm_per_mv": 10,
+    "ground_truth": {
+        "hr":  167,
+        "pr":  null,
+        "qrs": 148,
+        "qtc": 533,
+        "axis": 79
+    },
+    "tolerance": {
+        "hr_bpm": 8,
+        "pr_ms":  40,
+        "qrs_ms": 60,
+        "qtc_ms": 80
+    },
+    "min_quality": 0.35,
+    "_notes": "Truth values transcribed from machine printout (varied_HR167_reference.jpg). PR=null because the machine could not measure it. Beat=15, '#Unconfirmed report#'. Wide-QRS tachycardia is a stress test for the DWT delineator — wider tolerances reflect that."
+}

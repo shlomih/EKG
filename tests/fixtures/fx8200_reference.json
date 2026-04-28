@@ -1,0 +1,20 @@
+{
+    "description": "FX-8200-V51-01-C, normal sinus, indoor light, 3x4+rhythm layout. Reference photo for Round 3 scan-accuracy verification.",
+    "machine": "FX-8200-V51-01-C",
+    "paper_speed": 25,
+    "mm_per_mv": 10,
+    "ground_truth": {
+        "hr":  66,
+        "pr":  131,
+        "qrs": 91,
+        "qtc": 436
+    },
+    "tolerance": {
+        "hr_bpm": 4,
+        "pr_ms":  40,
+        "qrs_ms": 50,
+        "qtc_ms": 50
+    },
+    "min_quality": 0.4,
+    "_notes": "Truth values are printed on the paper itself. PR tolerance is wider than ideal because DWT P-onset detection on photo-reconstructed signals is the main residual error after Round 3."
+}

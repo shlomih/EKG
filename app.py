@@ -647,7 +647,8 @@ with tab_scan:
 
             # Block low-quality scans — showing clinical findings from noisy input is worse than no result
             _quality = _calib_info.get("quality", 0.0) if _calib_info else 0.0
-            if _calib_info and _quality < 0.4:
+            _quality_failed = bool(_calib_info and _quality < 0.4)
+            if _quality_failed:
                 st.error(
                     f"⚠️ Scan quality too low ({_quality:.0%}) — please retake.\n\n"
                     "• Ensure good lighting — no shadows across the paper\n"
@@ -656,22 +657,28 @@ with tab_scan:
                     "• Use landscape orientation"
                 )
                 st.session_state.pop("signal", None)
-                st.image(_display_img, caption=t("input_image_caption"), width='stretch')
             else:
                 st.session_state.signal = smoothed
                 st.session_state.fs = 500
 
-                st.image(_display_img, caption=t("input_image_caption"), width='stretch')
+            st.image(_display_img, caption=t("input_image_caption"), width='stretch')
 
-                # Show the exact lead-row strip that was analysed so the user can verify
-                _preview = _calib_info.get("preview_strip_rgb") if _calib_info else None
-                if _preview is not None:
-                    n_rows = _calib_info.get("n_rows_found", 1)
-                    st.image(
-                        _preview,
-                        caption=f"Lead row actually analysed (selected from {n_rows} detected)",
-                        width='stretch',
+            # Always show the exact strip that was analysed so the user can verify the crop —
+            # works on both the success path AND the quality-fail path so users can see WHY
+            # the scan was rejected (wrong row picked, paper edge clipped, shadow in band, etc.).
+            _preview = _calib_info.get("preview_strip_rgb") if _calib_info else None
+            if _preview is not None:
+                n_rows = _calib_info.get("n_rows_found", 1)
+                if _quality_failed:
+                    _preview_caption = (
+                        f"Strip analysed (quality {_quality:.0%}). "
+                        "Verify the crop looks correct before retaking."
                     )
+                elif n_rows > 1:
+                    _preview_caption = f"Lead row analysed (selected from {n_rows} detected)"
+                else:
+                    _preview_caption = "Lead row analysed"
+                st.image(_preview, caption=_preview_caption, width='stretch')
 
                 sig_duration = len(smoothed) / 500
                 if sig_duration < 3:
