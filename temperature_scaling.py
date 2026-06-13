@@ -182,7 +182,7 @@ def evaluate(probs, labels, thresholds, codes, title=""):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def run(model_path: str = MODEL_PATH):
+def run(model_path: str = MODEL_PATH, force_method: str = "auto"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -299,8 +299,8 @@ def run(model_path: str = MODEL_PATH):
               f"{per_f1_pc[i]:>7.3f} {delta:>+7.3f}{marker}")
 
     # ── Step 6: Save best result ──────────────────────────────────────────
-    # Use per-class-T if it beats global, else global
-    if macro_pc >= macro_global:
+    # Use per-class-T if it beats global, else global (auto); --method overrides.
+    if force_method == "per_class" or (force_method == "auto" and macro_pc >= macro_global):
         best_thresholds = pc_thresholds
         best_method = "per_class_temperature"
         best_T = T_per_class.tolist()
@@ -310,6 +310,8 @@ def run(model_path: str = MODEL_PATH):
         best_method = "global_temperature"
         best_T = T_global
         best_probs_test = test_probs_global
+    if force_method != "auto":
+        print(f"\n  [--method {force_method}] overrode auto selection")
 
     best_preds = np.stack([
         (best_probs_test[:, i] >= best_thresholds[i]).astype(int)
@@ -347,5 +349,7 @@ def run(model_path: str = MODEL_PATH):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=MODEL_PATH, help="Model checkpoint path")
+    parser.add_argument("--method", default="auto", choices=["auto", "global", "per_class"],
+                        help="Force calibration method (default: auto)")
     args = parser.parse_args()
-    run(args.model)
+    run(args.model, force_method=args.method)

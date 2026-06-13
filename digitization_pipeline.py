@@ -24,6 +24,25 @@ import numpy as np
 from PIL import Image, ImageOps
 from scipy.signal import butter, filtfilt, find_peaks, resample_poly
 
+# Optional OCR for lead-label routing. The pipeline degrades to the
+# heuristic R-peak-regularity scorer when this import or the underlying
+# Tesseract binary isn't available, so the app still runs without it.
+try:
+    import pytesseract  # noqa: F401
+    _PYTESSERACT_AVAILABLE = True
+except ImportError:
+    _PYTESSERACT_AVAILABLE = False
+
+_TESSERACT_BINARY_OK = None  # lazily probed; see _ocr_available()
+
+# Common Windows install locations to try before giving up. The
+# UB-Mannheim installer writes to Program Files by default but doesn't
+# add itself to PATH, so we have to look for it ourselves.
+_TESSERACT_FALLBACK_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
 # Standard ECG paper calibration constants
 # Small grid square = 1 mm × 1 mm
 # At 25 mm/s  and 10 mm/mV: 1 small sq = 40 ms × 0.1 mV
@@ -349,6 +368,197 @@ def _select_best_row(trace_binary, bands):
     return max(candidates, key=lambda t: t[1])[0]
 
 
+# ── A.7 OCR-based lead identification (PMcardio "Identify Lead → Orient Signal") ──
+
+# Canonical lead names we recognize. Anything OCR returns gets normalized
+# to one of these or rejected.
+_CANONICAL_LEADS = {"I", "II", "III", "aVR", "aVL", "aVF",
+                    "V1", "V2", "V3", "V4", "V5", "V6"}
+
+# Common OCR confusions, applied after uppercasing (except the aV* prefix).
+# Tesseract often reads 'I'/'1'/'l' interchangeably and confuses 'II' as 'Il' or 'l1'.
+_OCR_NORMALIZE = {
+    "L": "I", "1": "I", "0": "O",
+}
+
+
+def _ocr_available():
+    """Probe whether the Tesseract binary is callable. Cached after first call.
+
+    Tries PATH first, then falls back to known Windows install locations.
+    The UB-Mannheim installer doesn't update PATH automatically, so without
+    this fallback users would need to manually edit their environment.
+    """
+    global _TESSERACT_BINARY_OK
+    if _TESSERACT_BINARY_OK is not None:
+        return _TESSERACT_BINARY_OK
+    if not _PYTESSERACT_AVAILABLE:
+        _TESSERACT_BINARY_OK = False
+        return False
+    try:
+        pytesseract.get_tesseract_version()
+        _TESSERACT_BINARY_OK = True
+        return True
+    except Exception:
+        pass
+    import os as _os
+    for path in _TESSERACT_FALLBACK_PATHS:
+        if _os.path.isfile(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            try:
+                pytesseract.get_tesseract_version()
+                _TESSERACT_BINARY_OK = True
+                return True
+            except Exception:
+                continue
+    _TESSERACT_BINARY_OK = False
+    return False
+
+
+def _normalize_lead_name(raw):
+    """
+    Best-effort cleanup of OCR output to a canonical lead name.
+
+    Returns the canonical name (e.g. "II", "aVR", "V3") or None if the text
+    doesn't plausibly look like a lead label.
+    """
+    if not raw:
+        return None
+    # Strip whitespace, dots, commas, dashes
+    s = raw.strip().replace(".", "").replace(",", "").replace("-", "")
+    if not s:
+        return None
+    # aV-family: case-insensitive prefix match
+    low = s.lower()
+    if low.startswith("av") and len(s) >= 3:
+        suffix = s[2].upper()
+        if suffix in {"R", "L", "F"}:
+            return f"aV{suffix}"
+        # Common confusions: 'avi' → aVL, 'av1' → aVL (1↔L), 'avr/avf' obvious
+        if suffix in {"I", "1", "L"}:
+            return "aVL"
+    # V-leads: V1..V6
+    upper = s.upper()
+    if upper.startswith("V") and len(upper) >= 2 and upper[1] in "123456":
+        return f"V{upper[1]}"
+    # Limb leads I, II, III — only accept if the whole string reduces to I's
+    # after applying common OCR substitutions (otherwise "gibberish" matches
+    # because it contains an 'i').
+    swapped = "".join(_OCR_NORMALIZE.get(ch, ch) for ch in upper)
+    if swapped in {"I", "II", "III"}:
+        return swapped
+    return None
+
+
+import re as _re
+
+# Match a canonical lead name as a standalone token. Anchored on word
+# boundaries so embedded-letter false positives (the 'i' in "i") don't
+# leak through. Must NOT match inside dates ("18:12") or HR numbers.
+_LEAD_TOKEN_RE = _re.compile(
+    r"(?<![A-Za-z0-9])(aV[RLF]|V[1-6]|III|II|I)(?![A-Za-z0-9])",
+    _re.IGNORECASE,
+)
+
+
+def _read_band_label(paper_bgr, band, label_col_frac=None):
+    """
+    OCR the band and return a canonical lead name (e.g. "II", "aVR", "V1")
+    or None.
+
+    Empirical finding on the 4 fixtures: FX-8200 thermal printer prints
+    the lead label *inside* each row (mid/right of the trace), not in a
+    leftmost label column. PSM 7 (single line) + character whitelist
+    finds nothing because each band is a 100-300px strip with a label
+    surrounded by ECG trace and grid noise — not a clean text line.
+
+    Strategy that works: pass the full-width band gray crop to Tesseract
+    in PSM 11 (sparse text — finds text in any orientation/position),
+    *without* a character whitelist, and post-filter the output for
+    canonical lead-name tokens via regex. The existing date/time/HR
+    header noise on each band gets discarded by the regex anchors.
+
+    `label_col_frac` is accepted for backwards compatibility but ignored
+    — we now scan the entire band width.
+    """
+    if not _ocr_available():
+        return None
+    s, e = band
+    h, w = paper_bgr.shape[:2]
+    s = max(0, int(s)); e = min(h, int(e))
+    if e - s < 20:
+        return None
+    crop = paper_bgr[s:e, :]
+    if crop.size == 0:
+        return None
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    try:
+        raw = pytesseract.image_to_string(gray, config="--psm 11")
+    except Exception:
+        return None
+    # Pull all canonical-lead-shaped tokens from the OCR output. Tesseract
+    # often returns multiple lines including header noise (date, HR), so
+    # we rely on the regex to discard non-leads.
+    matches = _LEAD_TOKEN_RE.findall(raw)
+    if not matches:
+        return None
+    normed = [n for n in (_normalize_lead_name(m) for m in matches) if n]
+    if not normed:
+        return None
+    # Multi-letter labels (II, III, aVR/aVL/aVF, V1..V6) are highly specific
+    # and only appear as true labels. Single "I" tokens come from PSM 11
+    # reading any vertical grid-line mark as the letter "I", so we trust
+    # them only when nothing more distinctive shows up.
+    multi = [n for n in normed if len(n) >= 2]
+    if multi:
+        from collections import Counter
+        return Counter(multi).most_common(1)[0][0]
+    # Only single-letter matches — accept "I" only if it appears at least
+    # twice (single occurrence is too easily one stray vertical mark).
+    if normed.count("I") >= 2:
+        return "I"
+    return None
+
+
+# Priority order when picking which band to extract as the rhythm strip.
+# II is the most common rhythm strip on FX-8200 and most A4 hospital
+# prints. V1 is a common alternative. After that we accept any labeled
+# band, preferring the longest (which on a multi-row layout is usually
+# the dedicated rhythm strip rather than a per-cell snippet).
+_LEAD_PRIORITY = ("II", "V1", "I", "III", "aVR", "aVL", "aVF",
+                  "V2", "V3", "V4", "V5", "V6")
+
+
+def _pick_by_label(labeled, all_bands, trace_binary):
+    """
+    Pick a single band using OCR'd lead labels. Falls back to
+    _select_best_row when no labels are available or none match.
+
+    Args:
+        labeled  : list of ((s, e), lead_name) — bands with confident OCR.
+        all_bands: full list of (s, e) bands from _detect_lead_rows.
+        trace_binary: trace mask, passed through to the heuristic fallback.
+
+    Returns:
+        (start, end) of the chosen band.
+    """
+    if labeled:
+        by_name = {}
+        for band, name in labeled:
+            # If a lead is detected on multiple rows, prefer the longest.
+            prev = by_name.get(name)
+            if prev is None or (band[1] - band[0]) > (prev[1] - prev[0]):
+                by_name[name] = band
+        for name in _LEAD_PRIORITY:
+            if name in by_name:
+                return by_name[name]
+        # Some lead got detected but it's not in our priority list — pick the
+        # longest labeled band as a safe default.
+        return max((b for b, _ in labeled), key=lambda b: b[1] - b[0])
+    # No OCR results — fall back to the existing heuristic.
+    return _select_best_row(trace_binary, all_bands)
+
+
 def _compute_quality_score(trace_binary):
     """
     Estimate signal extraction quality (0-1).
@@ -670,6 +880,17 @@ def extract_signal_from_image(image_path,
             plausible.append((s, e, tr))
         plausible.sort(key=lambda t: t[2], reverse=True)
         plausible = plausible[:5]
+
+        # A.7.2 OCR-based lead routing — DISABLED after empirical evaluation.
+        # The helpers (_read_band_label, _pick_by_label, _normalize_lead_name)
+        # remain available for future iterations, but routing by label hurts
+        # accuracy on the current fixtures: Tesseract finds multi-letter
+        # labels (aVR, aVF, V4) on the FX-8200 *header* band as often as
+        # on real ECG rows, and even when it picks a true label the chosen
+        # band isn't necessarily the one with the cleanest R-peak train.
+        # Re-enabling will require either (a) excluding header bands more
+        # robustly, or (b) combining label evidence with R-peak regularity
+        # rather than letting label priority win outright.
         # If only one survived, use it.
         if len(plausible) == 1:
             selected_row = (plausible[0][0], plausible[0][1])
@@ -738,6 +959,18 @@ def extract_signal_from_image(image_path,
 
     if len(signal_px) == 0:
         raise ValueError("Signal extraction produced empty array — image may be blank or unreadable")
+
+    # PMcardio-style auto-polarity flip. R-peaks should deflect *more* than
+    # S-waves; if the negative excursion dominates the median by 1.4× the
+    # positive one, the trace is inverted (rotated band, or aVR which is
+    # naturally negative). Applied before calibration so the sign carries
+    # through to mV and to NeuroKit2 downstream.
+    if len(signal_px) > 1:
+        med = float(np.median(signal_px))
+        neg_excursion = abs(float(signal_px.min()) - med)
+        pos_excursion = abs(float(signal_px.max()) - med)
+        if neg_excursion > 1.4 * pos_excursion:
+            signal_px = -signal_px
 
     # ── Amplitude calibration ─────────────────────────────────────────────
     # Each pixel in Y corresponds to: 1 / (px_per_mm_y * mm_per_mv) mV

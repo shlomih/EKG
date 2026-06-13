@@ -47,6 +47,64 @@ QTC_HIGH_FEMALE = 460   # ms
 QTC_CRITICAL    = 500   # ms — Torsades risk regardless of sex
 
 
+def _recover_missed_rpeaks(cleaned, r_peaks, sampling_rate):
+    """Recover R-peaks that NeuroKit missed on low-amplitude scanned beats.
+
+    On digitized paper ECGs a beat with a slightly attenuated R-wave is
+    sometimes skipped, leaving one RR interval that is ~2-3x the surrounding
+    rhythm (the "one RR ~= 2x its neighbours" signature). A single miss
+    corrupts HR (averaged over a wrong long RR) and breaks QTc (Bazett divides
+    by the wrong sqrt(RR), pushing the value out of physiological bounds).
+
+    Strategy: for every gap noticeably longer than the *local* median RR,
+    estimate how many beats are missing, place candidate peaks at evenly
+    spaced positions inside the gap, snap each to the nearest local maximum in
+    the cleaned signal, and accept it only if its amplitude is comparable to
+    the surrounding real R-peaks. Purely additive — never deletes a detected
+    peak — so it cannot make a clean trace worse.
+
+    Returns a sorted numpy array of R-peak sample indices.
+    """
+    r_peaks = np.asarray(r_peaks, dtype=int)
+    if len(r_peaks) < 3:
+        return r_peaks
+
+    rr = np.diff(r_peaks)
+    med_rr = float(np.median(rr))
+    if med_rr <= 0:
+        return r_peaks
+
+    # Reference R-amplitude from the beats we already trust.
+    r_amps = cleaned[r_peaks]
+    med_amp = float(np.median(r_amps))
+    # Snap window: +/- 12% of a median RR around each expected position.
+    snap = max(1, int(0.12 * med_rr))
+
+    recovered = list(r_peaks)
+    for i in range(len(r_peaks) - 1):
+        left, right = r_peaks[i], r_peaks[i + 1]
+        gap = right - left
+        n_missing = int(round(gap / med_rr)) - 1
+        if n_missing < 1 or gap < 1.5 * med_rr:
+            continue
+        step = gap / (n_missing + 1)
+        for k in range(1, n_missing + 1):
+            expected = int(left + step * k)
+            lo = max(left + snap, expected - snap)
+            hi = min(right - snap, expected + snap)
+            if hi <= lo:
+                continue
+            seg = cleaned[lo:hi]
+            if len(seg) == 0:
+                continue
+            cand = lo + int(np.argmax(seg))
+            # Accept only a genuine R-like deflection (>= 40% of median R amp).
+            if cleaned[cand] >= 0.4 * med_amp:
+                recovered.append(cand)
+
+    return np.array(sorted(set(int(p) for p in recovered)), dtype=int)
+
+
 # ─────────────────────────────────────────────────────────────
 # Core Measurement Function
 # ─────────────────────────────────────────────────────────────
@@ -99,8 +157,15 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
         cleaned = nk.ecg_clean(signal, sampling_rate=sampling_rate)
 
         # ── Step 2: Signal quality check ──────────────────────
-        quality = nk.ecg_quality(cleaned, sampling_rate=sampling_rate)
-        results["quality_score"] = round(float(np.mean(quality)), 3)
+        # nk.ecg_quality crashes with "cannot convert float NaN to integer"
+        # when the signal has too few R-peaks to form valid RR intervals
+        # (NeuroKit2's internal ecg_segment fails). Default to 0.5 so the
+        # rest of the pipeline can still report intervals.
+        try:
+            quality = nk.ecg_quality(cleaned, sampling_rate=sampling_rate)
+            results["quality_score"] = round(float(np.mean(quality)), 3)
+        except (ValueError, TypeError, IndexError):
+            results["quality_score"] = 0.5
 
         if results["quality_score"] < 0.3:
             results["warnings"].append(
@@ -111,6 +176,18 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
         # ── Step 3: R-peak detection ───────────────────────────
         _, r_info = nk.ecg_peaks(cleaned, sampling_rate=sampling_rate)
         r_peaks = r_info["ECG_R_Peaks"]
+
+        # Recover beats NeuroKit skipped on low-amplitude scanned traces.
+        # A single missed beat leaves one RR ~= 2x its neighbours, which
+        # corrupts HR and breaks QTc — see _recover_missed_rpeaks.
+        n_before = len(r_peaks)
+        r_peaks = _recover_missed_rpeaks(cleaned, r_peaks, sampling_rate)
+        if len(r_peaks) > n_before:
+            results["warnings"].append(
+                f"Recovered {len(r_peaks) - n_before} missed R-peak(s) in long RR gaps."
+            )
+            # Keep delineation in sync with the augmented peak set.
+            r_info = {"ECG_R_Peaks": r_peaks}
 
         if len(r_peaks) < 2:
             results["error"] = "Insufficient R-peaks detected (< 2). Signal too short or too noisy."
@@ -128,8 +205,12 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
             results["error"] = "R-peaks detected at identical positions — signal too noisy or flat."
             return results
 
-        hr_values = 60000 / valid_rr
-        results["hr"] = round(float(np.mean(hr_values)), 1)
+        # HR from the *median* RR, not the mean of instantaneous HR: a single
+        # spurious short or long RR (a missed/extra beat the recovery pass
+        # didn't catch) skews mean-instantaneous-HR badly, whereas the median
+        # RR is robust to one outlier interval and is the standard estimator
+        # for average rate in mildly irregular rhythm.
+        results["hr"] = round(float(60000.0 / np.median(valid_rr)), 1)
 
         # RR variability (coefficient of variation — proxy for rhythm regularity)
         mean_rr = float(np.mean(valid_rr))
@@ -146,6 +227,21 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
             )
             results["raw_delineation"] = waves
 
+            # ── Edge-beat exclusion ────────────────────────────
+            # The DWT delineator is unstable at the strip boundaries: the first
+            # and last beat frequently come back with NaN P/T fiducials or with
+            # onsets/offsets latched onto edge artifacts (grid lines, the 0.18
+            # left-text mask). On scanned strips this inflates PR and wipes out
+            # QTc. When we have enough beats (>=4), restrict per-beat fiducial
+            # pairing to the *interior* beats, which have full waveform context
+            # on both sides. This does not shorten the signal (so it is safe
+            # against the A.5 3-second DWT-minimum precedent) — it only ignores
+            # boundary beats' fiducials.
+            if len(r_peaks) >= 4:
+                beat_r_peaks = r_peaks[1:-1]
+            else:
+                beat_r_peaks = r_peaks
+
             # ── PR Interval ────────────────────────────────────
             # PR = P onset to R peak
             p_onsets  = _safe_to_int_indices(waves.get("ECG_P_Onsets", []))
@@ -153,7 +249,7 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
             if len(p_onsets) >= 2 and len(r_peaks) >= 2:
                 pr_intervals = []
-                for r in r_peaks:
+                for r in beat_r_peaks:
                     # Find the nearest P onset before this R peak
                     candidates = p_onsets[p_onsets < r]
                     if len(candidates) > 0:
@@ -176,7 +272,7 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                 # Beat window: QRS boundary must fall within a short pre/post-R window
                 # (max ~120ms either side of R — wider than any physiological QRS half-width).
                 win = int(0.12 * sampling_rate)
-                for r in r_peaks:
+                for r in beat_r_peaks:
                     onset_candidates  = r_onsets[(r_onsets  >= r - win) & (r_onsets  <  r)]
                     offset_candidates = r_offsets[(r_offsets > r)       & (r_offsets <= r + win)]
                     if len(onset_candidates) == 0 or len(offset_candidates) == 0:
@@ -198,7 +294,12 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
             if len(t_offsets) >= 2:
                 qtc_values = []
+                # Skip the first beat too when we have enough beats — its T-offset
+                # is the most edge-affected; the last beat is already excluded by [:-1].
+                skip_first = len(r_peaks) >= 4
                 for i, r in enumerate(r_peaks[:-1]):
+                    if skip_first and i == 0:
+                        continue
                     rr_samples_i = r_peaks[i + 1] - r
                     max_t_offset = r + int(0.7 * rr_samples_i)
                     t_candidates = t_offsets[(t_offsets > r) & (t_offsets <= max_t_offset)]

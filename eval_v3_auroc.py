@@ -33,13 +33,24 @@ from dataset_chapman import MERGED_CODES
 from dataset_code15 import build_code15_demo_cache, CODE15_INDEX, CODE15_PATH_PREFIX
 
 
-def collect_probs(model, loader, device):
+def collect_probs(model, loader, device, temperature=None):
+    """Collect sigmoid probabilities. If `temperature` is given, divides logits
+    by it before sigmoid — must match how thresholds were tuned in
+    `temperature_scaling.py`, otherwise F1 looks artificially low."""
     model.eval()
     all_probs, all_labels = [], []
+    T = None
+    if temperature is not None:
+        if isinstance(temperature, (list, np.ndarray)):
+            T = torch.tensor(np.asarray(temperature, dtype=np.float32), device=device)
+        else:
+            T = float(temperature)
     with torch.no_grad():
         for sig, aux, lbl in loader:
-            logits = model(sig.to(device), aux.to(device))
-            all_probs.append(torch.sigmoid(logits.float()).cpu().numpy())
+            logits = model(sig.to(device), aux.to(device)).float()
+            if T is not None:
+                logits = logits / T
+            all_probs.append(torch.sigmoid(logits).cpu().numpy())
             all_labels.append(lbl.numpy())
     return np.concatenate(all_probs), np.concatenate(all_labels).astype(int)
 
@@ -123,8 +134,19 @@ def run(model_path: str = "models/ecg_multilabel_v3.pt",
     print(f"Loaded: {model_path}  (best_auroc={ckpt.get('best_auroc', '?'):.4f})")
 
     with open(thresholds_path) as f:
-        tuned_thresholds = json.load(f)["thresholds"]
+        thresh_data = json.load(f)
+    tuned_thresholds = thresh_data["thresholds"]
+    # Thresholds were tuned against temperature-scaled probs; apply the same T at inference.
+    temperature = thresh_data.get("temperature", None)
+    calib_method = thresh_data.get("calibration_method", "none")
     print(f"Thresholds: {thresholds_path}")
+    if temperature is not None:
+        if isinstance(temperature, list):
+            print(f"Calibration: {calib_method}, per-class T (len={len(temperature)})")
+        else:
+            print(f"Calibration: {calib_method}, T={float(temperature):.3f}")
+    else:
+        print("Calibration: none (raw sigmoid)")
 
     print("\nLoading data (this takes ~2 min on CPU)...")
     all_paths, all_labels, all_folds = load_v3_data()
@@ -155,21 +177,21 @@ def run(model_path: str = "models/ecg_multilabel_v3.pt",
 
     print("\nRunning inference on PTB-XL test (fold 10)...")
     loader, labels = make_loader(ptbxl_test_mask)
-    probs, lbl_np = collect_probs(model, loader, device)
+    probs, lbl_np = collect_probs(model, loader, device, temperature=temperature)
     results["ptbxl_test"] = print_table(
         "PTB-XL Test (fold 10) — original 14 classes", probs, lbl_np, tuned_thresholds, V3_CODES, new_codes
     )
 
     print("\nRunning inference on Challenge test (fold 20)...")
     loader, labels = make_loader(chal_test_mask)
-    probs, lbl_np = collect_probs(model, loader, device)
+    probs, lbl_np = collect_probs(model, loader, device, temperature=temperature)
     results["challenge_test"] = print_table(
         "Challenge Test (fold 20) — all 26 classes", probs, lbl_np, tuned_thresholds, V3_CODES, new_codes
     )
 
     print("\nRunning inference on Combined test (fold 10 + fold 20)...")
     loader, labels = make_loader(combined_mask)
-    probs, lbl_np = collect_probs(model, loader, device)
+    probs, lbl_np = collect_probs(model, loader, device, temperature=temperature)
     results["combined_test"] = print_table(
         "Combined Test (fold 10 + 20) — full 26-class evaluation", probs, lbl_np, tuned_thresholds, V3_CODES, new_codes
     )
@@ -177,7 +199,7 @@ def run(model_path: str = "models/ecg_multilabel_v3.pt",
     if c15_test_mask.sum() > 0:
         print("\nRunning inference on CODE-15% test (fold 30)...")
         loader, labels = make_loader(c15_test_mask)
-        probs, lbl_np = collect_probs(model, loader, device)
+        probs, lbl_np = collect_probs(model, loader, device, temperature=temperature)
         results["code15_test"] = print_table(
             "CODE-15% Test (fold 30) — AF/1dAVb/RBBB/LBBB/SB/ST + NORM", probs, lbl_np,
             tuned_thresholds, V3_CODES, new_codes

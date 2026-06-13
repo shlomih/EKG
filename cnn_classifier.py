@@ -67,7 +67,9 @@ N_CLASSES = 5
 
 # Auxiliary features: 8 voltage + 2 demographic + 1 axis + 3 morphology (v10)
 #                   + 4 RR-interval / rhythm features (v3.1)
-N_AUX = 18
+#                   + 6 measurement features from interval_calculator (v3.3):
+#                     pr_norm, qrs_norm, qtc_norm, pvc_ratio, rr_irreg_norm, measurement_valid
+N_AUX = 24
 
 # Standard 12-lead index mapping (PTB-XL WFDB order)
 _LEAD_IDX = {
@@ -290,6 +292,101 @@ def extract_voltage_features(sig_12xN, sex="M", age=50):
 
     rr_feats = extract_rr_features(sig_12xN)   # indices 14-17 -- new v3.1
     return np.concatenate([feats, rr_feats])
+
+
+# -------------------------------------------------------------
+# v3.3 measurement-feature aux extraction
+# Indices 18-23 sourced from interval_calculator.calculate_intervals(),
+# which is the same code path the app uses at scan inference. Training
+# and inference must call the same function for identical features.
+# -------------------------------------------------------------
+
+# Schema version for measurement_pack arrays. Bump if the 6 features
+# below change in number, order, or normalization.
+MEASUREMENT_SCHEMA_VERSION = "v33.1"
+N_MEASUREMENT_FEATURES = 6
+
+
+def _measurement_features_from_intervals(res: dict) -> np.ndarray:
+    """
+    Convert a calculate_intervals() result dict into the 6 normalized aux features.
+
+    Indices (relative, prepended after the 18 v3.2 features at training time):
+      0: pr_norm           pr_ms / 300                  [0, 1.3]
+      1: qrs_norm          qrs_ms / 200                 [0, 1.5]
+      2: qtc_norm          qtc_ms / 500                 [0, 1.2]
+      3: pvc_ratio         fraction of RR > 20% off median
+      4: rr_irreg_norm     log10(SD1/SD2) clipped       [-2, 2]
+      5: measurement_valid 1 if calculate_intervals had no error else 0
+
+    Failed delineations zero-fill 0..4 and set 5 = 0.
+    """
+    feats = np.zeros(N_MEASUREMENT_FEATURES, dtype=np.float32)
+    if not isinstance(res, dict) or res.get("error"):
+        return feats
+
+    pr  = res.get("pr")
+    qrs = res.get("qrs")
+    qtc = res.get("qtc")
+    rr  = res.get("rr_intervals") or []
+
+    if pr is not None:
+        feats[0] = float(np.clip(float(pr) / 300.0, 0.0, 1.3))
+    if qrs is not None:
+        feats[1] = float(np.clip(float(qrs) / 200.0, 0.0, 1.5))
+    if qtc is not None:
+        feats[2] = float(np.clip(float(qtc) / 500.0, 0.0, 1.2))
+
+    rr_arr = np.asarray(rr, dtype=np.float32)
+    rr_arr = rr_arr[np.isfinite(rr_arr)]
+    if len(rr_arr) >= 3:
+        med = float(np.median(rr_arr))
+        if med > 0:
+            feats[3] = float(np.mean(np.abs(rr_arr - med) / med > 0.20))
+        diffs = np.diff(rr_arr)
+        sd1 = float(np.sqrt(0.5 * np.var(diffs))) if len(diffs) else 0.0
+        var_rr = float(np.var(rr_arr))
+        sd2_sq = max(2.0 * var_rr - 0.5 * float(np.var(diffs)), 0.0)
+        sd2 = float(np.sqrt(sd2_sq))
+        if sd2 > 1e-6 and sd1 > 1e-6:
+            feats[4] = float(np.clip(np.log10(sd1 / sd2), -2.0, 2.0))
+
+    feats[5] = 1.0  # measurement_valid
+    return feats
+
+
+def extract_aux_v33(sig_12xN, sex="M", age=50, measurement_pack=None):
+    """
+    V3.3 aux extractor: 24-dim vector. Indices 0-17 identical to
+    extract_voltage_features(); indices 18-23 are measurement features
+    from interval_calculator.calculate_intervals on Lead II.
+
+    measurement_pack:
+      - np.ndarray of length 6 (precomputed cache row), used as-is for indices 18-23
+      - None: compute on-the-fly from sig_12xN[lead II] via calculate_intervals()
+              (used at inference time)
+    """
+    base = extract_voltage_features(sig_12xN, sex=sex, age=age)  # 18
+
+    if measurement_pack is not None:
+        meas = np.asarray(measurement_pack, dtype=np.float32).reshape(-1)
+        if meas.shape[0] != N_MEASUREMENT_FEATURES:
+            # Bad cache row — fall back to zeros + invalid flag rather than crash training
+            meas = np.zeros(N_MEASUREMENT_FEATURES, dtype=np.float32)
+    else:
+        try:
+            from interval_calculator import calculate_intervals  # local to avoid import cycle
+            n_samples = sig_12xN.shape[1]
+            fs_est = n_samples // 10  # 10s recording at fs Hz
+            if fs_est < 100:
+                fs_est = 500
+            res = calculate_intervals(sig_12xN[_LEAD_IDX["II"]].astype(np.float64), sampling_rate=fs_est)
+            meas = _measurement_features_from_intervals(res)
+        except Exception:
+            meas = np.zeros(N_MEASUREMENT_FEATURES, dtype=np.float32)
+
+    out = np.concatenate([base, meas]).astype(np.float32)
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 # -------------------------------------------------------------
