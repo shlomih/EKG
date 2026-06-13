@@ -414,8 +414,10 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
             # ── QTc (Bazett's Formula) ─────────────────────────
             # QTc = QT / sqrt(RR in seconds)
             # Per-beat T-offset pairing: find the T_Offset that falls between R[i] and
-            # R[i]+0.7*RR. On noisy scans DWT often fires at the T *peak*; bound QT ≥ 280ms
-            # to reject those (T-peak timing is ~240-280ms post-R, well below real QT).
+            # R[i]+0.95*RR. Window extended to 95% of RR to support tachycardia (HR>150 bpm)
+            # where QT can reach 90%+ of the RR interval; 0.70 was too narrow and caused
+            # missed T-offsets at fast rates. On noisy scans DWT often fires at the T *peak*;
+            # bound QT ≥ 280ms to reject those (T-peak timing is ~240-280ms post-R, well below real QT).
             t_offsets = _safe_to_int_indices(waves.get("ECG_T_Offsets", []))
 
             if len(t_offsets) >= 2:
@@ -427,7 +429,7 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                     if skip_first and i == 0:
                         continue
                     rr_samples_i = r_peaks[i + 1] - r
-                    max_t_offset = r + int(0.7 * rr_samples_i)
+                    max_t_offset = r + int(0.95 * rr_samples_i)
                     t_candidates = t_offsets[(t_offsets > r) & (t_offsets <= max_t_offset)]
                     if len(t_candidates) == 0:
                         continue
@@ -974,29 +976,4 @@ if __name__ == "__main__":
         print(f"  QRS Duration  : {intervals['qrs']} ms")
         print(f"  QTc (Bazett)  : {intervals['qtc']} ms")
         print(f"  RR Variability: {intervals['hr_variability']}")
-        print(f"  Quality Score : {intervals['quality_score']}")
-        if intervals["warnings"]:
-            print(f"\n  Warnings:")
-            for w in intervals["warnings"]:
-                print(f"    ⚠ {w}")
-
-    # Test clinical context
-    print("\n  Testing clinical context (pacemaker patient, low K+)...")
-    patient = {
-        "age": 72, "sex": "M",
-        "has_pacemaker": True,
-        "is_athlete": False,
-        "is_pregnant": False,
-        "k_level": 3.1,
-    }
-    context = apply_clinical_context(intervals, patient)
-    print(f"\n  Urgency: {context['urgency']}")
-    print(f"\n  Flags ({len(context['flags'])}):")
-    for f in context["flags"]:
-        print(f"    {SEVERITY_EMOJI.get(f['severity'], '?')} [{f['severity']}] {f['finding']}")
-        print(f"      → {f['explanation'][:90]}")
-    print(f"\n  Suppressed by context ({len(context['suppressed'])}):")
-    for s in context["suppressed"]:
-        print(f"    ⚪ {s['finding']} — {s['suppressed_reason'][:80]}")
-
-    print("\n  ✅ interval_calculator.py ready\n")
+       
