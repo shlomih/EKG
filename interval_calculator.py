@@ -105,6 +105,122 @@ def _recover_missed_rpeaks(cleaned, r_peaks, sampling_rate):
     return np.array(sorted(set(int(p) for p in recovered)), dtype=int)
 
 
+# Detector panel for consensus R-peak detection. These NeuroKit methods run
+# reliably on short, noisy, scan-reconstructed signals. Excluded on purpose:
+# 'gamboa', 'zong', 'manikandan' (observed to raise on these signals).
+_RPEAK_METHODS = [
+    "neurokit", "pantompkins1985", "hamilton2002",
+    "elgendi2010", "kalidas2017", "rodrigues2021",
+]
+
+
+def _score_rpeak_train(train, cleaned, sampling_rate):
+    """Physiological-plausibility score for a candidate R-peak train (0-1).
+
+    Combines three cues that separate a real beat train from a regular train of
+    noise spikes:
+      - regularity      : low RR coefficient of variation
+      - coverage        : peaks span the signal with no oversized gap
+      - amplitude consistency : real R-peaks have similar heights in `cleaned`
+    Returns None if the train is implausible (too few peaks, HR out of range).
+    """
+    train = np.asarray(train, dtype=int)
+    if len(train) < 3:
+        return None
+    rr = np.diff(train).astype(float)
+    med_rr = float(np.median(rr))
+    if med_rr <= 0:
+        return None
+    hr = 60000.0 / (med_rr / sampling_rate * 1000.0)
+    if not (30.0 <= hr <= 230.0):
+        return None
+
+    cv = float(np.std(rr) / max(np.mean(rr), 1e-9))
+    regularity = 1.0 - min(cv, 1.0)
+
+    # Coverage: fraction of the signal spanned, penalized if any RR gap is much
+    # larger than the median (a sparse train that skips beats). The gap penalty
+    # is what rejects a sparse-but-regular noise train.
+    span = (train[-1] - train[0]) / max(len(cleaned) - 1, 1)
+    max_gap_ratio = float(np.max(rr) / med_rr)
+    gap_penalty = 1.0 if max_gap_ratio <= 1.8 else max(0.0, 1.0 - (max_gap_ratio - 1.8))
+    coverage = min(span, 1.0) * gap_penalty
+
+    amps = cleaned[train].astype(float)
+    amp_med = float(np.median(np.abs(amps))) + 1e-9
+    amp_cv = float(np.std(amps) / amp_med)
+    amp_consistency = 1.0 - min(amp_cv, 1.0)
+
+    return 0.45 * regularity + 0.35 * coverage + 0.20 * amp_consistency
+
+
+def _consensus_rpeaks(cleaned, sampling_rate, nk):
+    """Multi-detector consensus R-peak detection.
+
+    No single detector is reliable on scan-reconstructed ECGs — each is best on
+    some traces and badly wrong on others. This runs a panel of detectors,
+    clusters the peaks they *agree* on (a real beat is found by most detectors;
+    a noise spike by only one → voted out), then selects the most
+    physiologically plausible consensus train across vote thresholds.
+
+    Falls back to the default `nk.ecg_peaks` if fewer than two detectors
+    succeed or no candidate train is plausible.
+
+    Returns a sorted numpy array of R-peak sample indices.
+    """
+    # 1. Run the panel; record (peak_position, detector_index) for vote counting.
+    labeled = []
+    n_ok = 0
+    for di, method in enumerate(_RPEAK_METHODS):
+        try:
+            _, info = nk.ecg_peaks(cleaned, sampling_rate=sampling_rate, method=method)
+            pk = np.asarray(info["ECG_R_Peaks"], dtype=float)
+            pk = pk[np.isfinite(pk)].astype(int)
+        except Exception:
+            continue
+        if len(pk) >= 2:
+            n_ok += 1
+            for p in pk:
+                labeled.append((int(p), di))
+
+    if n_ok < 2:
+        _, info = nk.ecg_peaks(cleaned, sampling_rate=sampling_rate)
+        return np.asarray(info["ECG_R_Peaks"], dtype=float)[
+            np.isfinite(np.asarray(info["ECG_R_Peaks"], dtype=float))
+        ].astype(int)
+
+    # 2. Cluster peaks within a ~120 ms tolerance window; vote = distinct detectors.
+    labeled.sort()
+    win = int(0.12 * sampling_rate)
+    clusters = [[labeled[0]]]
+    for pos, di in labeled[1:]:
+        if pos - clusters[-1][-1][0] <= win:
+            clusters[-1].append((pos, di))
+        else:
+            clusters.append([(pos, di)])
+
+    cl_pos = np.array([int(np.median([p for p, _ in c])) for c in clusters])
+    cl_vote = np.array([len({di for _, di in c}) for c in clusters])
+    order = np.argsort(cl_pos)
+    cl_pos, cl_vote = cl_pos[order], cl_vote[order]
+
+    # 3. Candidate trains at vote thresholds k = 2..n_ok; 4. pick best score.
+    best_score, best_train = -np.inf, None
+    for k in range(2, n_ok + 1):
+        train = cl_pos[cl_vote >= k]
+        score = _score_rpeak_train(train, cleaned, sampling_rate)
+        if score is not None and score > best_score:
+            best_score, best_train = score, train
+
+    if best_train is None:
+        _, info = nk.ecg_peaks(cleaned, sampling_rate=sampling_rate)
+        return np.asarray(info["ECG_R_Peaks"], dtype=float)[
+            np.isfinite(np.asarray(info["ECG_R_Peaks"], dtype=float))
+        ].astype(int)
+
+    return np.sort(best_train).astype(int)
+
+
 # ─────────────────────────────────────────────────────────────
 # Core Measurement Function
 # ─────────────────────────────────────────────────────────────
@@ -173,21 +289,17 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                 "Results may be unreliable — check lead placement."
             )
 
-        # ── Step 3: R-peak detection ───────────────────────────
-        _, r_info = nk.ecg_peaks(cleaned, sampling_rate=sampling_rate)
-        r_peaks = r_info["ECG_R_Peaks"]
-
-        # Recover beats NeuroKit skipped on low-amplitude scanned traces.
-        # A single missed beat leaves one RR ~= 2x its neighbours, which
-        # corrupts HR and breaks QTc — see _recover_missed_rpeaks.
-        n_before = len(r_peaks)
-        r_peaks = _recover_missed_rpeaks(cleaned, r_peaks, sampling_rate)
-        if len(r_peaks) > n_before:
-            results["warnings"].append(
-                f"Recovered {len(r_peaks) - n_before} missed R-peak(s) in long RR gaps."
-            )
-            # Keep delineation in sync with the augmented peak set.
-            r_info = {"ECG_R_Peaks": r_peaks}
+        # ── Step 3: R-peak detection (multi-detector consensus) ─
+        # No single detector is reliable on scan-reconstructed ECGs, so we
+        # combine a panel and keep the peaks they agree on. See
+        # _consensus_rpeaks. Applied to all signals for one consistent path.
+        r_peaks = _consensus_rpeaks(cleaned, sampling_rate, nk)
+        r_info = {"ECG_R_Peaks": r_peaks}
+        # NB: missed-beat recovery (_recover_missed_rpeaks) is intentionally NOT
+        # run here — consensus voting already rescues beats a single detector
+        # missed, and re-running recovery on the consensus train re-introduced
+        # spurious short RRs (verified on fx8200/HR167). Kept available for the
+        # single-detector fallback path only.
 
         if len(r_peaks) < 2:
             results["error"] = "Insufficient R-peaks detected (< 2). Signal too short or too noisy."
@@ -214,7 +326,21 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
         # RR variability (coefficient of variation — proxy for rhythm regularity)
         mean_rr = float(np.mean(valid_rr))
-        results["hr_variability"] = round(float(np.std(valid_rr) / mean_rr), 3) if mean_rr > 0 else None
+        rr_cv = float(np.std(valid_rr) / mean_rr) if mean_rr > 0 else None
+        results["hr_variability"] = round(rr_cv, 3) if rr_cv is not None else None
+
+        # Safety note: high RR variability means either a genuinely irregular
+        # rhythm (e.g. AFib) OR — on scan-reconstructed signals — that the
+        # consensus detector could not lock onto a clean beat train (spurious/
+        # missed beats). Either way the rate and intervals are provisional and
+        # should be verified against the trace. See SCAN_DEBUG_ANALYSIS.md task
+        # "Scan-derived HR is provisional on noisy traces".
+        if rr_cv is not None and rr_cv > 0.25:
+            results["warnings"].append(
+                f"Irregular R-R intervals (variability {rr_cv:.0%}). Rate/intervals are "
+                "provisional — confirm against the trace; on scans this often means noisy "
+                "beat detection rather than true arrhythmia."
+            )
 
         # ── Step 5: Full waveform delineation ─────────────────
         # This gives us P, Q, R, S, T peak locations

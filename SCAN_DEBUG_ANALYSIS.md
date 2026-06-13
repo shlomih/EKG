@@ -4,6 +4,29 @@ _Investigation date: 2026-06-13. Status: 3/8 fixture tests passing, 5/8 failing.
 
 Failing fixtures: `fx8200_round3_verification`, `fx8200_reference`, `varied_HR106`, `varied_HR167`, `varied_HR84`.
 
+---
+
+## Queued Tasks for Nightly Agents
+
+> **Agents: read this section first.** Shlomi may have updated this file during the day — always read it fresh at the start of each run. Tasks are listed in priority order. Mark a task `[IN PROGRESS]`, `[DONE]`, or `[BLOCKED: reason]` as you work.
+
+| # | Status | Task | Target file | Fixtures affected |
+|---|--------|------|-------------|-------------------|
+| A | `[PENDING]` | **Trace-content quality (not post-hoc filtering)** — fix *which beats/leads land in the extracted trace*. NOTE: 1D denoising (medfilt/Savitzky-Golay) was tried and did NOT help — the spurious peaks are broad deflections (prominent T/P-waves or band artifacts), not high-freq spikes. Work the extraction/band step instead. | `digitization_pipeline.py` → `extract_signal_from_image()` / `_trace_to_signal` | HR84, HR106, fx8200 |
+| B | `[PENDING]` | **Band selection for high HR** — scan at multiple `distance` values, pick most self-consistent RR train; or run quick `nk.ecg_peaks` on downsampled candidate band | `digitization_pipeline.py` → band selection scorer (~lines 897-929) | HR167 (every-3rd-beat), HR106 (only 3 beats extracted → delineation starved) |
+| C | `[PENDING]` | **Grid-crossing inpainting for P-onsets** — suppress false P-onsets at grid-line crossings to fix PR overestimation | `digitization_pipeline.py` → grid artifact handling | fx8200, HR84 (PR overestimation) |
+| D | `[PENDING]` | **Scan-derived HR is provisional on noisy traces** — consensus R-peak detection (now in `interval_calculator._consensus_rpeaks`) regressed HR84 (90→131): on a noisy trace it locks onto a denser, spurious-but-tall beat train. A provisional-rate warning is emitted when RR variability > 25% (interim safety). Real fix = cleaner trace content (items A/B). Until then, **scan HR on irregular/noisy traces must be treated as provisional, not clinical.** | `interval_calculator.py` (warning) + `digitization_pipeline.py` (real fix) | HR84 (regression), any noisy scan |
+
+**Constraints agents must never break:**
+- Currently passing (verified 2026-06-13): the 3 non-fixture tests — `test_normalize_lead_name_canonical_forms`, `test_polarity_flip_inverts_negative_dominant_signal`, `test_polarity_flip_does_not_invert_normal_signal`. **All 5 image fixtures currently FAIL.** Never let a green test go red.
+- R-peak detection now uses **multi-detector consensus** (`_consensus_rpeaks`, all signals) — do not revert to single-detector without checking HR167/HR106 don't regress.
+- Never shorten the extracted signal below ~3 s (DWT needs it — see HR84 precedent in this file)
+- Only edit `digitization_pipeline.py` and `interval_calculator.py` unless Shlomi says otherwise
+- Always run the full fixture suite after each change, not just the target fixture
+- Safety net: `git tag scan-pre-consensus` (commit `1454439`) is the pre-consensus baseline for comparison/revert
+
+---
+
 ## How the pipeline is wired today
 
 The pipeline already does a row-first / peaks-second flow, and there are actually **two
@@ -194,3 +217,61 @@ on some, attenuated beats on others) and **early P-onsets at grid crossings**. T
 3. **Grid-crossing inpainting** — for PR/P-onset over-detection.
 These are `digitization_pipeline.py` changes and are a meaningful next chunk — checkpoint with
 Shlomi before starting, since they carry regression risk to the real-ECG path in `app.py`.
+
+---
+
+## DECISION (2026-06-13) — Multi-detector consensus R-peak detection, for ALL signals
+Pursuing the user's idea: combine several R-peak detectors (consensus/ensemble) instead of one.
+Validated below. **Applied to all signals** (one code path), knowingly changing `app.py`'s
+already-working digital-ECG path. Safety net: `git tag scan-pre-consensus` at commit `1454439`
+(3/8 fixtures + the 3 interval-side fixes) for comparison/revert. Plan file:
+`C:\Users\osnat\.claude\plans\flickering-twirling-pine.md`.
+
+**Why consensus (validated this session):** single detectors have no universal winner; each wins
+on some fixtures and fails on others (table above). Cluster-voting across 6 NeuroKit methods
+(neurokit, pantompkins1985, hamilton2002, elgendi2010, kalidas2017, rodrigues2021) produced a
+correct-range candidate for HR167 (vote≥3 → 163), HR106 (vote≥5 → 109), HR84 (vote≥5 → 84) —
+which single detectors could not do consistently. Open problem: **automatic selection** of the
+right consensus train (noisy traces need stricter agreement; clean-but-fast HR167 needs looser);
+"lowest RR-CV alone" mis-picks HR84 → 131, so selection combines regularity + coverage +
+amplitude consistency.
+
+### Attempt 5 — Consensus detector `_consensus_rpeaks` in `interval_calculator.py` (2026-06-13)
+- **Change:** Step-3 detection now runs the 6-method panel, clusters peaks by agreement (~120ms
+  window, vote = distinct detectors), generates candidate trains at vote thresholds k=2..N, and
+  selects the highest-scoring train (`_score_rpeak_train`: regularity + coverage + amplitude
+  consistency, HR-plausibility gated). Removed the `_recover_missed_rpeaks` post-step (consensus
+  subsumes it; re-running it re-introduced spurious short RRs on fx8200/HR167).
+- **Result:** 3/8 pass, 5/8 fail. **No previously-passing test broke.** Big HR-accuracy gains on
+  the catastrophic cases; one regression (HR84) and remaining non-HR blockers:
+  | fixture | HR before (tag) | HR now | truth | tol | status |
+  |---------|-----------------|--------|-------|-----|--------|
+  | HR167   | 60 (every-3rd)  | **173** | 167 | 8 | HR ✅ — fails only on **QTc=N/A** |
+  | HR106   | 115             | **109** | 106 | 5 | HR ✅ — fails on PR/QRS/QTc N/A (only 3 R-peaks → delineation starved) |
+  | fx8200  | 50              | 71      | 66  | 4 | HR closer, still off by 5; PR still over |
+  | HR84    | 90              | 116-131 | 84  | 4 | **HR regressed** — selector prefers a dense spurious-peak train |
+- **Why HR84 regressed / can't be tuned away:** at no vote threshold does the clean ~84bpm beat
+  train exist — high thresholds drop real beats (coverage collapses), low thresholds admit
+  spurious-but-*tall*, regularly-spaced deflections. Amplitude/prominence cues don't separate them
+  (the spurious peaks are tall). → genuinely needs a **cleaner extracted signal**, not selector
+  tuning. Adding single-detector trains as candidates was tried and rejected (made fx8200→76 and
+  HR106→91 worse).
+- **Verdict:** Consensus is a clear **clinical-safety win** (HR167 60→173 is far safer than the
+  reverse) and broke nothing green. But to flip tests green and undo the HR84 regression we need:
+  (i) **QTc T-offset window** fix for tachycardia (QT can exceed 0.7×RR → HR167 green), and
+  (ii) **extracted-signal denoising** (HR84/HR106/fx8200). Proceeding per plan Step 3.
+
+### Attempt 5b — things tried and rejected to close the gap in `interval_calculator` (2026-06-13)
+- **HR167 QTc window relax:** NOT the cause. HR167's consensus train still has spurious close
+  peaks (RR 91-128 samples); T-offsets pair to give implausible ~100ms QT that the 280ms floor
+  correctly rejects. Widening the window won't help while the R-train is imperfect.
+- **Signal denoising (medfilt 5/9, Savitzky-Golay, combos) before detection:** no change
+  (HR84 stays 131, etc.). The spurious peaks are **broad deflections** (likely prominent T/P-waves
+  or band artifacts), not high-frequency spikes — `nk.ecg_clean`'s bandpass already passes them.
+- **"Trust neurokit if healthy" guard:** rejected. HR84's neurokit train is itself unhealthy
+  (cv 0.41, 1.93× gap from the missed beat) so the guard still picks consensus 131; and it
+  reverts HR106 109→115 (loses a near-pass). neurokit "health" doesn't track correctness here.
+- **CONCLUSION:** interval-side tuning is exhausted. HR84/fx8200/HR106 need better **extracted
+  signal content** (which beats/leads land in the trace) — the band-selection / trace-quality work
+  (queued items A/B/C above), not post-hoc filtering. Consensus stays as a validated net
+  clinical-safety win; the HR84 HR-number regression sits inside an already-failing test.
