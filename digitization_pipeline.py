@@ -139,11 +139,65 @@ def _extract_trace(gray, grid_mask):
     return cleaned
 
 
-def _trace_to_signal(trace_binary, use_weighted=True):
+def _select_dominant_cluster(col_pixels, prev_value, gap_tol=1):
+    """Pick the dominant (largest) contiguous cluster of lit pixels in a column.
+
+    ECGtizer-style fragmented extraction: when a column contains pixels from
+    multiple sources (two nearby leads, a grid-line crossing the trace), splitting
+    into contiguous runs and selecting the largest one preferentially follows
+    the real trace ink over artifacts or adjacent-lead bleed.
+
+    Gap tolerance of 1 pixel lets a single-pixel anti-aliasing hole stay within
+    the same cluster without merging two genuinely separate traces.
+
+    For size ties, the cluster whose centroid is closest to ``prev_value``
+    (the preceding column's extracted row position) is chosen — enforcing
+    trace continuity across columns.
+
+    Parameters
+    ----------
+    col_pixels  : sorted 1-D int array of lit row indices (from np.where)
+    prev_value  : float (may be NaN) — the previous column's signal[x-1]
+    gap_tol     : int — max row-gap within one cluster (default 1)
+
+    Returns
+    -------
+    float — median row index of the dominant cluster
     """
-    Convert binary trace image to 1D signal.
-    Uses weighted median of black pixel positions per column
-    for smoother extraction.
+    diffs = np.diff(col_pixels)
+    split_idx = np.where(diffs > gap_tol)[0] + 1
+    clusters = np.split(col_pixels, split_idx)
+
+    if len(clusters) == 1:
+        return float(np.median(clusters[0]))
+
+    sizes = np.array([len(c) for c in clusters])
+    max_size = sizes.max()
+    candidates = [c for c in clusters if len(c) == max_size]
+
+    if len(candidates) == 1:
+        chosen = candidates[0]
+    else:
+        centroids = np.array([np.mean(c) for c in candidates])
+        if not np.isnan(prev_value):
+            ref = float(prev_value)
+        else:
+            ref = float(np.mean(col_pixels))
+        chosen = candidates[int(np.argmin(np.abs(centroids - ref)))]
+
+    return float(np.median(chosen))
+
+
+def _trace_to_signal(trace_binary, use_weighted=True):
+    """Convert binary trace image to 1D signal.
+
+    When ``use_weighted=True`` (default), uses ECGtizer-style fragmented
+    extraction: per column, split lit pixels into contiguous runs and pick
+    the largest cluster (most ink). This preferentially follows the real trace
+    over grid-line crossings or adjacent-lead bleed. Ties are broken by
+    continuity with the previous column.
+
+    When ``use_weighted=False``, falls back to simple median of all lit pixels.
     """
     rows, cols = trace_binary.shape
     signal = np.full(cols, np.nan)
@@ -153,16 +207,9 @@ def _trace_to_signal(trace_binary, use_weighted=True):
         if len(col_pixels) == 0:
             continue
 
-        if use_weighted and len(col_pixels) >= 3:
-            # Weight by distance from center of mass
-            center = np.mean(col_pixels)
-            weights = np.exp(-0.5 * ((col_pixels - center) / (len(col_pixels) * 0.3 + 1)) ** 2)
-            # When pixels are very spread out (multiple traces / row-boundary noise),
-            # weights underflow to all-zero — fall back to median rather than divide-by-zero.
-            if weights.sum() > 1e-12:
-                signal[x] = np.average(col_pixels, weights=weights)
-            else:
-                signal[x] = np.median(col_pixels)
+        if use_weighted:
+            prev = signal[x - 1] if x > 0 else np.nan
+            signal[x] = _select_dominant_cluster(col_pixels, prev)
         else:
             signal[x] = np.median(col_pixels)
 
@@ -213,6 +260,69 @@ def _lowpass_40hz(signal, fs):
         return filtfilt(b, a, signal)
     except Exception:
         return signal
+
+
+def _suppress_grid_crossing_artifacts(signal_px, grid_mask, text_cols=0, min_density=0.35):
+    """Linear-interpolate across vertical grid-line columns to remove step artifacts.
+
+    When the ECG trace crosses a vertical grid line, the grid-removal mask
+    (`cv2.bitwise_and(binary, ~grid_mask)`) erases pixels at the crossing
+    columns. The resulting gap is NaN-interpolated by `_trace_to_signal`,
+    leaving a smooth inflection that the DWT delineator (`ecg_delineate
+    method="dwt"`) misidentifies as a P-wave onset, inflating PR by
+    100-200 ms (fx8200: 254 ms measured vs 131 ms truth).
+
+    Vertical grid lines span the full band height → per-column grid density
+    (`grid_mask > 0).mean(axis=0)`) ≈ 0.8-1.0. Horizontal grid lines give
+    density ≈ 0.01-0.04. QRS peaks are not in the grid mask (different color
+    ink). Threshold 0.35 cleanly separates vertical grid columns from everything
+    else.
+
+    One sample per image column (1:1 mapping from _trace_to_signal). If that
+    invariant breaks the shape guard returns unchanged.
+
+    Parameters
+    ----------
+    signal_px  : 1-D float array — extracted pixel-space signal (len = n_cols)
+    grid_mask  : 2-D uint8 array (band_height, n_cols), axis=0 is rows
+    text_cols  : int — skip leftmost text region (already zeroed in trace)
+    min_density: float — vertical-grid-line detection threshold (default 0.35)
+
+    Returns
+    -------
+    1-D float array — same length as signal_px, grid crossings interpolated
+    """
+    # Safety guards — return input unchanged rather than crash
+    if grid_mask is None or grid_mask.ndim != 2:
+        return signal_px
+    if grid_mask.shape[1] != len(signal_px) or len(signal_px) < 3:
+        return signal_px
+
+    out = signal_px.astype(float).copy()
+    N = len(out)
+
+    # Per-column grid density: axis=0 collapses rows → 1-D array length N
+    density = (grid_mask > 0).mean(axis=0)
+
+    # Mark columns that are dominated by a vertical grid line
+    bad = density >= min_density
+
+    # Never interpolate over the left text block or use it as an anchor
+    bad[:text_cols] = False
+
+    # Anchor indices: clean columns outside the text region
+    good_idx = np.where(~bad & (np.arange(N) >= text_cols))[0]
+    if good_idx.size < 2:
+        return out  # too few clean columns to interpolate from
+
+    # Repair indices: bad columns that are in the signal region
+    repair_idx = np.where(bad & (np.arange(N) >= text_cols))[0]
+    if repair_idx.size:
+        # np.interp linearly interpolates from nearest good columns on each side;
+        # clamps to edge value for any bad column outside the good-column range.
+        out[repair_idx] = np.interp(repair_idx, good_idx, out[good_idx])
+
+    return out
 
 
 def _detect_lead_rows(trace_binary, min_row_height_ratio=0.05):
@@ -956,6 +1066,12 @@ def extract_signal_from_image(image_path,
         trace[:, :text_cols] = 0
 
     signal_px = _trace_to_signal(trace, use_weighted=True)
+
+    # Task C: suppress residual vertical-grid-line dips that DWT delineation
+    # misidentifies as P-onsets, inflating PR by 100-200 ms.
+    signal_px = _suppress_grid_crossing_artifacts(
+        signal_px, grid_mask, text_cols=text_cols
+    )
 
     if len(signal_px) == 0:
         raise ValueError("Signal extraction produced empty array — image may be blank or unreadable")

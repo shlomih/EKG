@@ -154,6 +154,77 @@ def _score_rpeak_train(train, cleaned, sampling_rate):
     return 0.45 * regularity + 0.35 * coverage + 0.20 * amp_consistency
 
 
+def _filter_by_peak_width(peaks, signal, sampling_rate):
+    """Post-filter: remove peaks whose half-max width is outside QRS physiology.
+
+    True QRS R-peaks have a narrow, sharp spike (half-max width ~15–100 ms).
+    Broad deflections like T-waves (typically 80–300 ms half-max) and noise
+    spikes (<15 ms) fall outside this range and are rejected.
+
+    This directly targets the HR84 failure mode: consensus picks a spurious-
+    but-tall train of broad T/P-wave deflections at ~130 bpm. T-waves have
+    roughly 2–5× the half-max width of a real QRS, so the width gate removes
+    them cleanly without touching genuine R-peaks.
+
+    Upper bound (100 ms) is generous enough to pass bundle-branch-block beats
+    (~80–90 ms half-max even with QRS duration of 120–200 ms), because the
+    sharp R spike is still narrow even inside a wide complex.
+
+    Safety guard: if filtering would leave fewer than 2 peaks, the original
+    set is returned unchanged.
+
+    Parameters
+    ----------
+    peaks        : array of R-peak sample indices from the consensus train
+    signal       : the cleaned 1-D ECG signal (from nk.ecg_clean)
+    sampling_rate: Hz (typically 500)
+
+    Returns
+    -------
+    Sorted numpy array of accepted peak sample indices.
+    """
+    peaks = np.asarray(peaks, dtype=int)
+    if len(peaks) < 2:
+        return peaks
+
+    min_samp = max(1, int(0.015 * sampling_rate))   # 15 ms
+    max_samp = int(0.100 * sampling_rate)             # 100 ms
+
+    sig = signal.astype(float)
+    # If R-peaks are predominantly negative (inverted lead), flip for measurement.
+    if np.median(sig[peaks]) < 0:
+        sig = -sig
+
+    try:
+        from scipy.signal import peak_widths as _peak_widths
+        # Clamp peak indices to valid range to avoid IndexError at edges.
+        valid_peaks = np.clip(peaks, 1, len(sig) - 2)
+        widths, _, _, _ = _peak_widths(sig, valid_peaks, rel_height=0.5)
+        keep_mask = (widths >= min_samp) & (widths <= max_samp)
+    except Exception:
+        # Fallback: manual half-max crossing search (no scipy dependency).
+        n = len(sig)
+        keep_mask = np.ones(len(peaks), dtype=bool)
+        for i, r in enumerate(peaks):
+            pv = sig[r]
+            if pv <= 0:
+                continue  # inverted or flat — can't measure; keep by default
+            half = pv * 0.5
+            left = r
+            while left > 0 and sig[left] >= half:
+                left -= 1
+            right = r
+            while right < n - 1 and sig[right] >= half:
+                right += 1
+            w = right - left
+            if w < min_samp or w > max_samp:
+                keep_mask[i] = False
+
+    filtered = peaks[keep_mask]
+    # Safety: never return fewer than 2 peaks.
+    return filtered if len(filtered) >= 2 else peaks
+
+
 def _consensus_rpeaks(cleaned, sampling_rate, nk):
     """Multi-detector consensus R-peak detection.
 
@@ -217,6 +288,13 @@ def _consensus_rpeaks(cleaned, sampling_rate, nk):
         return np.asarray(info["ECG_R_Peaks"], dtype=float)[
             np.isfinite(np.asarray(info["ECG_R_Peaks"], dtype=float))
         ].astype(int)
+
+    # ── Peak-width gate ────────────────────────────────────────────────────
+    # Remove broad deflections (T-waves, P-waves) that score well on the
+    # regularity/coverage scorer but are physiologically too wide to be QRS.
+    # Main target: HR84 spurious train of tall-but-broad T/P deflections.
+    # See Research findings 2026-06-13 in SCAN_DEBUG_ANALYSIS.md (Approach 2).
+    best_train = _filter_by_peak_width(best_train, cleaned, sampling_rate)
 
     return np.sort(best_train).astype(int)
 
@@ -976,4 +1054,29 @@ if __name__ == "__main__":
         print(f"  QRS Duration  : {intervals['qrs']} ms")
         print(f"  QTc (Bazett)  : {intervals['qtc']} ms")
         print(f"  RR Variability: {intervals['hr_variability']}")
-       
+        print(f"  Quality Score : {intervals['quality_score']}")
+        if intervals["warnings"]:
+            print(f"\n  Warnings:")
+            for w in intervals["warnings"]:
+                print(f"    ⚠ {w}")
+
+    # Test clinical context
+    print("\n  Testing clinical context (pacemaker patient, low K+)...")
+    patient = {
+        "age": 72, "sex": "M",
+        "has_pacemaker": True,
+        "is_athlete": False,
+        "is_pregnant": False,
+        "k_level": 3.1,
+    }
+    context = apply_clinical_context(intervals, patient)
+    print(f"\n  Urgency: {context['urgency']}")
+    print(f"\n  Flags ({len(context['flags'])}):")
+    for f in context["flags"]:
+        print(f"    {SEVERITY_EMOJI.get(f['severity'], '?')} [{f['severity']}] {f['finding']}")
+        print(f"      → {f['explanation'][:90]}")
+    print(f"\n  Suppressed by context ({len(context['suppressed'])}):")
+    for s in context["suppressed"]:
+        print(f"    ⚪ {s['finding']} — {s['suppressed_reason'][:80]}")
+
+    print("\n  ✅ interval_calculator.py ready\n")
