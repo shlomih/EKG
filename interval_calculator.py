@@ -453,14 +453,31 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
             if len(p_onsets) >= 2 and len(r_peaks) >= 2:
                 pr_intervals = []
+                # Attempt 10B: Restrict P-onset search to a physiological window
+                # (60–250ms before R). DWT on scanned strips places spurious P-onsets
+                # at 300–500ms when residual grid-line artifacts create P-like
+                # inflections well outside the true PR interval. The 250ms ceiling
+                # still covers mild 1st-degree AVB (PR 200-250ms) while cleanly
+                # rejecting artifact P-onsets that _suppress_grid_crossing_artifacts
+                # does not fully eliminate. Safety: if no P found in the tight window,
+                # fall back to the wide search (60-400ms) so we don't lose PR on
+                # genuinely long-PR beats.
+                p_win_min = int(0.060 * sampling_rate)   # 60 ms
+                p_win_max = int(0.250 * sampling_rate)   # 250 ms tight window
                 for r in beat_r_peaks:
-                    # Find the nearest P onset before this R peak
-                    candidates = p_onsets[p_onsets < r]
-                    if len(candidates) > 0:
-                        p = candidates[-1]
-                        pr_ms = ((r - p) / sampling_rate) * 1000
-                        if 60 < pr_ms < 400:  # sanity bounds
-                            pr_intervals.append(pr_ms)
+                    # Tight search first: P onset 60–250ms before R
+                    cands_tight = p_onsets[(p_onsets >= r - p_win_max) & (p_onsets < r - p_win_min)]
+                    if len(cands_tight) > 0:
+                        p = cands_tight[-1]  # closest in window
+                    else:
+                        # Fallback to wide search: any P onset 60–400ms before R
+                        cands_wide = p_onsets[(p_onsets >= r - int(0.400 * sampling_rate)) & (p_onsets < r - p_win_min)]
+                        if len(cands_wide) == 0:
+                            continue
+                        p = cands_wide[-1]
+                    pr_ms = ((r - p) / sampling_rate) * 1000
+                    if 60 < pr_ms < 400:  # sanity bounds
+                        pr_intervals.append(pr_ms)
                 if pr_intervals:
                     results["pr"] = round(float(np.median(pr_intervals)), 1)
 
