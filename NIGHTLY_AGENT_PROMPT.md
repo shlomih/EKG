@@ -21,12 +21,33 @@ for f in HEAD.lock index.lock; do
     fi
 done
 
+# Install deps from pre-downloaded wheels (pip outbound is blocked 403 — must use local).
+# Shlomi downloads these on Windows with the command in the comment block below,
+# then commits linux_wheels/ to git.  Key flags: --no-deps skips transitive
+# resolution (matplotlib/numpy/pandas are already in the sandbox — no need to
+# re-download them, and pulling them causes kiwisolver conflict errors).
+#
+#   pip download --no-deps ^
+#     "scipy==1.14.1" "neurokit2==0.2.13" ^
+#     "scikit-learn==1.5.2" "joblib==1.4.2" "threadpoolctl==3.5.0" ^
+#     "pytest==8.3.4" "pluggy==1.5.0" "iniconfig==2.0.0" "packaging==24.2" ^
+#     --platform manylinux_2_17_x86_64 --python-version 310 ^
+#     --implementation cp --abi cp310 --only-binary=:all: -d linux_wheels
+#
+if [ -d "$PROJ/linux_wheels" ]; then
+    python3 -m pip install --break-system-packages --quiet --no-index \
+      --find-links "$PROJ/linux_wheels" \
+      scipy neurokit2 scikit-learn joblib threadpoolctl pytest \
+      && echo "deps installed from linux_wheels/" \
+      || echo "WARNING: wheel install failed — check linux_wheels/ contents"
+fi
+
 ls "$PROJ/tests/fixtures/"
 python3 --version
 python3 -c "import scipy, neurokit2; print('deps ok')" 2>&1
 ```
 
-If `import scipy, neurokit2` fails: log the blocker in SCAN_DEBUG_ANALYSIS.md and proceed with logically-safe changes only — still commit with an "unverified" note.
+If `import scipy, neurokit2` fails and `linux_wheels/` is missing: Shlomi must run the `pip download` command above on Windows and commit the folder. Log the blocker and proceed with logically-safe changes only.
 
 ---
 
@@ -42,8 +63,16 @@ This file is short (~80 lines). It tells you: task queue, constraints, current g
 
 ## STEP 2 — Run baseline tests
 
+If deps are available, run tests now and write to result.txt (UTF-8, overwrite):
 ```bash
-cd "$PROJ" && python3 -m pytest tests/test_scan_accuracy.py -v 2>&1 | tail -30
+cd "$PROJ" && python3 -m pytest tests/test_scan_accuracy.py -v 2>&1 | tee result_linux.txt | tail -30
+```
+
+If deps still missing, read Shlomi's last Windows run instead:
+```bash
+python3 -c "
+with open('$PROJ/result.txt', encoding='utf-16') as f: print(f.read()[-3000:])
+" 2>/dev/null || cat "$PROJ/result_linux.txt" 2>/dev/null || echo "No result file found"
 ```
 
 Record the pass/fail count. If tests can't run (missing deps), note it as "unverified".

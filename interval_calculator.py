@@ -200,7 +200,11 @@ def _filter_by_peak_width(peaks, signal, sampling_rate):
         # Clamp peak indices to valid range to avoid IndexError at edges.
         valid_peaks = np.clip(peaks, 1, len(sig) - 2)
         widths, _, _, _ = _peak_widths(sig, valid_peaks, rel_height=0.5)
-        keep_mask = (widths >= min_samp) & (widths <= max_samp)
+        # Width=0 means peak_widths couldn't measure (zero prominence) — keep by
+        # default rather than rejecting a potentially valid QRS peak.  Only reject
+        # peaks whose measured width is in the noise range (1-14 ms) or clearly
+        # too wide for a QRS (> 100 ms).
+        keep_mask = (widths == 0) | ((widths >= min_samp) & (widths <= max_samp))
     except Exception:
         # Fallback: manual half-max crossing search (no scipy dependency).
         n = len(sig)
@@ -538,6 +542,46 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
 
                 if qtc_values:
                     results["qtc"] = round(float(np.median(qtc_values)), 1)
+
+            # ── QTc fallback: 'peak' method ────────────────────
+            # DWT mislabels the J-point as T-offset for fast (HR>130 bpm) or
+            # wide-QRS beats — all T-offsets land at 50-80ms from R (within the
+            # QRS), are rejected by the 280ms floor, and QTc stays None.
+            # The 'peak' method uses a simpler threshold approach that degrades
+            # more gracefully under these conditions.  Only attempted when DWT
+            # produced no valid QTc.
+            if results.get("qtc") is None and len(r_peaks) >= 3:
+                try:
+                    _, waves_peak = nk.ecg_delineate(
+                        cleaned, r_info, sampling_rate=sampling_rate, method="peak"
+                    )
+                    t_offs_peak = _safe_to_int_indices(
+                        waves_peak.get("ECG_T_Offsets", [])
+                    )
+                    if len(t_offs_peak) >= 2:
+                        qtc_peak_vals = []
+                        skip_first_p = len(r_peaks) >= 4
+                        for i_p, r_p in enumerate(r_peaks[:-1]):
+                            if skip_first_p and i_p == 0:
+                                continue
+                            rr_samp_p = r_peaks[i_p + 1] - r_p
+                            max_t_p = r_p + int(0.95 * rr_samp_p)
+                            t_cands_p = t_offs_peak[
+                                (t_offs_peak > r_p) & (t_offs_peak <= max_t_p)
+                            ]
+                            if len(t_cands_p) == 0:
+                                continue
+                            t_off_p = t_cands_p[-1]
+                            qt_ms_p = ((t_off_p - r_p) / sampling_rate) * 1000
+                            rr_s_p = rr_ms[i_p] / 1000
+                            if 280 < qt_ms_p < 600 and rr_s_p > 0:
+                                qtc_p = qt_ms_p / np.sqrt(rr_s_p)
+                                if 300 < qtc_p < 600:
+                                    qtc_peak_vals.append(qtc_p)
+                        if qtc_peak_vals:
+                            results["qtc"] = round(float(np.median(qtc_peak_vals)), 1)
+                except Exception:
+                    pass  # peak method also failed — QTc stays None
 
         except Exception as delineation_error:
             # Delineation can fail on noisy signals — HR is still valid
