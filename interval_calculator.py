@@ -307,7 +307,7 @@ def _consensus_rpeaks(cleaned, sampling_rate, nk):
     if len(best_train) >= 2:
         _rr_s = float(np.median(np.diff(best_train))) / max(sampling_rate, 1)
         _hr_est = 60.0 / _rr_s if _rr_s > 0 else 0
-        if _hr_est < 45:
+        if _hr_est < 55 or len(best_train) < 5:
             for _method in _RPEAK_METHODS:
                 try:
                     _, _info = nk.ecg_peaks(
@@ -573,13 +573,17 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                 if qtc_values:
                     results["qtc"] = round(float(np.median(qtc_values)), 1)
 
-            # ── QTc fallback: 'peak' method ────────────────────
+            # ── QTc fallback: 'peak' method with Q-onset correction ─────────
             # DWT mislabels the J-point as T-offset for fast (HR>130 bpm) or
-            # wide-QRS beats — all T-offsets land at 50-80ms from R (within the
-            # QRS), are rejected by the 280ms floor, and QTc stays None.
-            # The 'peak' method uses a simpler threshold approach that degrades
-            # more gracefully under these conditions.  Only attempted when DWT
-            # produced no valid QTc.
+            # wide-QRS beats — T-offsets land at 50-80ms from R (inside QRS),
+            # rejected by floor, QTc stays None.
+            # Fixes vs original Attempt 16:
+            #   (a) Use ECG_R_Onsets as QT start — for wide-QRS (QRS=148ms)
+            #       the R-peak is ~74ms AFTER Q-onset; measuring from R-peak
+            #       underestimates QTc by ~74/sqrt(RR_s) ≈ 126ms (too large).
+            #   (b) Lower QT floor 280→200ms — valid T-offsets at HR>130 bpm
+            #       fall at 200–280ms; DWT J-points are at 50–80ms so floor=200
+            #       still excludes them with 120ms margin.
             if results.get("qtc") is None and len(r_peaks) >= 3:
                 try:
                     _, waves_peak = nk.ecg_delineate(
@@ -587,6 +591,9 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                     )
                     t_offs_peak = _safe_to_int_indices(
                         waves_peak.get("ECG_T_Offsets", [])
+                    )
+                    r_onsets_peak = _safe_to_int_indices(
+                        waves_peak.get("ECG_R_Onsets", [])
                     )
                     if len(t_offs_peak) >= 2:
                         qtc_peak_vals = []
@@ -602,11 +609,21 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                             if len(t_cands_p) == 0:
                                 continue
                             t_off_p = t_cands_p[-1]
-                            qt_ms_p = ((t_off_p - r_p) / sampling_rate) * 1000
+                            # Use Q-onset (R_Onset) as QT start when available
+                            r_onset_cands = r_onsets_peak[
+                                (r_onsets_peak >= r_p - int(0.20 * rr_samp_p))
+                                & (r_onsets_peak <= r_p)
+                            ]
+                            qt_start = (
+                                int(r_onset_cands[-1])
+                                if len(r_onset_cands) > 0
+                                else r_p
+                            )
+                            qt_ms_p = ((t_off_p - qt_start) / sampling_rate) * 1000
                             rr_s_p = rr_ms[i_p] / 1000
-                            if 280 < qt_ms_p < 600 and rr_s_p > 0:
+                            if 200 < qt_ms_p < 650 and rr_s_p > 0:
                                 qtc_p = qt_ms_p / np.sqrt(rr_s_p)
-                                if 300 < qtc_p < 600:
+                                if 280 < qtc_p < 700:
                                     qtc_peak_vals.append(qtc_p)
                         if qtc_peak_vals:
                             results["qtc"] = round(float(np.median(qtc_peak_vals)), 1)

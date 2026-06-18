@@ -1,6 +1,6 @@
 # Scan Accuracy — Live State
 
-_Status: 3/8 passing (pre-Attempts 15-17, result.txt). Attempts 15–17 implemented, UNVERIFIED (sandbox blockers). Syntax clean (Windows file verified 2026-06-18)._
+_Status: 3/8 passing (result.txt 2026-06-18). Attempts 15–18 implemented, awaiting test run._
 _Full attempt history: `SCAN_HISTORY.md`_
 
 ---
@@ -72,11 +72,16 @@ Key functions added by Attempts 7-9:
 - Fix: `keep_mask = (widths == 0) | ((widths >= min_samp) & (widths <= max_samp))`.
 - **Status:** UNVERIFIED.
 
-### Attempt 18 — Syntax verification (2026-06-18, tonight)
-- **Finding:** Linux bash mount shows stale 1068-line truncated file. Windows file verified via Read tool: all functions complete, no truncation. Attempts 15, 16, 17 all confirmed present.
-- **Finding:** Attempt 17 was in the working tree but never documented — added to this file tonight.
-- **Action:** No new code changes. Read result.txt to analyze pre-Attempt-15 failures. fx8200 HR=54/PR=286ms: HR fix requires re-detection (Attempt 17 threshold=45 won't help, consensus=54 > 45). PR fix: DWT places P-onsets at ~286ms vs truth 131ms; Attempt 10B rejects this but fallback accepts it — fundamental DWT limitation on this scan.
-- **Result:** UNVERIFIED (same sandbox blockers: pip proxy 403 + git lock files).
+### Attempt 18 — Bradycardia-fallback + QTc-fallback fixes (2026-06-18)
+- **Root causes from result.txt (Shlomi's Windows run):**
+  - HR84: r_peaks=[918,1297,1686], HR=78 — consensus found 3 peaks, Attempt 17 threshold `<45` didn't trigger (78>45), delineation fails on 3 peaks → all None.
+  - HR106: r_peaks=[1030,1778], HR=40 — Attempt 17 DID trigger but individual detectors also can't find more peaks on this image.
+  - HR167: 11 peaks found, HR=173 ✓, but QTc=None — Attempt 16 peak-method fallback uses 280ms QT floor; T-offsets at ~250ms (valid for HR>130) fail the floor. Also QT measured from R-peak, not Q-onset — for wide-QRS (148ms) this underestimates QTc by ~126ms.
+  - fx8200: HR=54 (4 peaks, irregular RR), PR=286 (DWT P-onset at grid artifact). Separate problem.
+- **Fix A (Attempt 17 threshold):** `if _hr_est < 45` → `if _hr_est < 55 or len(best_train) < 5`. HR84 has 3 peaks < 5 → now triggers fallback.
+- **Fix B (Attempt 16 QTc floor + Q-onset):** QT floor 280→200ms; also extract `ECG_R_Onsets` from peak method and use as QT start (not R-peak) — fixes wide-QRS underestimation.
+- **Syntax:** Both edits verified via Read tool. Bash mount stale (shows 1059 lines, Windows has 1113+).
+- **Result:** UNVERIFIED. Expected: HR84 → more peaks → delineation succeeds. HR167 → QTc≈490-540ms (within ±80ms of truth 533).
 
 ## Nightly Run Summary — 2026-06-18
 - Attempts: 1 (Attempt 18 — discovery + verification)

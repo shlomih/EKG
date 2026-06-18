@@ -4,78 +4,63 @@ You are an autonomous coding agent. Improve the fixture test pass rate from 2am 
 
 ---
 
-## STEP 0 — Environment setup (do this first, one bash call)
+## STEP 0 — Environment setup (one bash call, keep it short)
 
 ```bash
 PROJ=$(find /sessions -maxdepth 4 -name "Shlomi--EKG" -type d 2>/dev/null | head -1)
 echo "Project at: $PROJ"
-START_TS=$(date +%s)  # record start time for duration reporting
+START_TS=$(date +%s)
 
-# Clear stale git lock files (left by sessions that hit context limit mid-commit)
-for f in HEAD.lock index.lock; do
-    lockpath="$PROJ/.git/$f"
-    if [ -f "$lockpath" ]; then
-        rm -f "$lockpath" 2>/dev/null \
-          && echo "Removed $f" \
-          || echo "WARNING: Cannot remove $lockpath — commits will be blocked. Shlomi must run: del .git\\$f from Windows cmd"
-    fi
-done
-
-# Install deps from pre-downloaded wheels (pip outbound is blocked 403 — must use local).
-# Shlomi downloads these on Windows with the command in the comment block below,
-# then commits linux_wheels/ to git.  Key flags: --no-deps skips transitive
-# resolution (matplotlib/numpy/pandas are already in the sandbox — no need to
-# re-download them, and pulling them causes kiwisolver conflict errors).
+# Install deps from pre-downloaded wheels (pip outbound is blocked 403).
+# Wheels are in linux_wheels/ — no platform flags needed at install time.
+# --no-deps skips transitive resolution; all required packages are explicit.
+# If a wheel is missing, add it to the pip download command below and commit.
 #
+# To refresh linux_wheels/ on Windows (run from EKG folder):
 #   pip download --no-deps ^
 #     "scipy==1.14.1" "neurokit2==0.2.13" ^
 #     "scikit-learn==1.5.2" "joblib==1.4.2" "threadpoolctl==3.5.0" ^
+#     "PyWavelets>=1.4.0" "exceptiongroup>=1.0.0rc8" ^
 #     "pytest==8.3.4" "pluggy==1.5.0" "iniconfig==2.0.0" "packaging==24.2" ^
 #     --platform manylinux_2_17_x86_64 --python-version 310 ^
 #     --implementation cp --abi cp310 --only-binary=:all: -d linux_wheels
 #
-if [ -d "$PROJ/linux_wheels" ]; then
-    python3 -m pip install --break-system-packages --quiet --no-index \
-      --find-links "$PROJ/linux_wheels" \
-      scipy neurokit2 scikit-learn joblib threadpoolctl pytest \
-      && echo "deps installed from linux_wheels/" \
-      || echo "WARNING: wheel install failed — check linux_wheels/ contents"
-fi
+python3 -m pip install --break-system-packages --quiet --no-index --no-deps \
+  --find-links "$PROJ/linux_wheels" \
+  scipy neurokit2 scikit-learn joblib threadpoolctl pytest \
+  PyWavelets pluggy iniconfig packaging exceptiongroup 2>&1 | tail -3
 
-ls "$PROJ/tests/fixtures/"
+python3 -c "import scipy, neurokit2, pytest; print('deps OK')" 2>&1
 python3 --version
-python3 -c "import scipy, neurokit2; print('deps ok')" 2>&1
+ls "$PROJ/tests/fixtures/" | head -10
 ```
 
-If `import scipy, neurokit2` fails and `linux_wheels/` is missing: Shlomi must run the `pip download` command above on Windows and commit the folder. Log the blocker and proceed with logically-safe changes only.
+If `deps OK` does not print, something is missing from linux_wheels/. Check which package failed and add its wheel. Do not ask Shlomi to do anything — just log the blocker and work on logically-safe code changes only.
+
+**IMPORTANT — do NOT do any of these:**
+- Ask Shlomi to delete git lock files (the agent handles this automatically below)
+- Ask Shlomi to run tests manually (always run in the sandbox)
+- Ask Shlomi to run git commands (always commit from sandbox)
 
 ---
 
-## STEP 1 — Read the live state file
+## STEP 1 — Read the live state file (short, no other files)
 
 ```bash
 cat "$PROJ/SCAN_DEBUG_ANALYSIS.md"
 ```
 
-This file is short (~80 lines). It tells you: task queue, constraints, current git state, last attempt. **Do not read SCAN_HISTORY.md unless you need deep context on a specific past attempt** — it's long and costs context budget.
+**Do NOT read** `SCAN_HISTORY.md`, `interval_calculator.py`, or `digitization_pipeline.py` upfront. Only read specific sections of code files when a fix requires it. Reading full files wastes context budget and causes the session to end early.
 
 ---
 
-## STEP 2 — Run baseline tests
+## STEP 2 — Run baseline tests from the sandbox
 
-If deps are available, run tests now and write to result.txt (UTF-8, overwrite):
 ```bash
-cd "$PROJ" && python3 -m pytest tests/test_scan_accuracy.py -v 2>&1 | tee result_linux.txt | tail -30
+cd "$PROJ" && python3 -m pytest tests/test_scan_accuracy.py -v 2>&1 | tee result_linux.txt | tail -40
 ```
 
-If deps still missing, read Shlomi's last Windows run instead:
-```bash
-python3 -c "
-with open('$PROJ/result.txt', encoding='utf-16') as f: print(f.read()[-3000:])
-" 2>/dev/null || cat "$PROJ/result_linux.txt" 2>/dev/null || echo "No result file found"
-```
-
-Record the pass/fail count. If tests can't run (missing deps), note it as "unverified".
+Record pass/fail count. This is the baseline for tonight.
 
 ---
 
@@ -84,33 +69,40 @@ Record the pass/fail count. If tests can't run (missing deps), note it as "unver
 Repeat until 6:55am:
 
 1. Pick the next `[IN PROGRESS]` or `[PENDING]` task from SCAN_DEBUG_ANALYSIS.md.
-2. Spawn **Thinker (opus)** for tasks where the approach isn't already specified. **Skip Thinker for trivial mechanical changes** (single parameter tweak, approach already fully specified in task description) — it costs context budget.
-3. Implement the fix yourself or spawn **Coder (sonnet)** for multi-step edits.
-4. **CRITICAL — never use `Write` on code files.** Use `Edit` only. `Write` replaces the entire file and truncates it if context runs out mid-call. File truncation has already caused SyntaxErrors 3 times.
-5. **After every edit, verify syntax immediately:**
+2. Read only the specific function(s) you need to edit (use `grep -n "def _function_name" FILE` to find line numbers, then `sed -n 'N,Mp' FILE` to read just those lines). **Do not read the whole file.**
+3. Spawn **Thinker (opus)** ONLY when the approach is completely unknown. Skip Thinker for: (a) mechanical parameter changes, (b) approach already specified in SCAN_DEBUG_ANALYSIS.md, (c) simple threshold or window adjustments.
+4. Implement the fix using **`Edit` only — never `Write`**. `Write` replaces the entire file and truncates it if context runs out mid-call.
+5. **After every edit, verify syntax:**
    ```bash
-   python3 -c "import ast; ast.parse(open('$PROJ/digitization_pipeline.py').read()); print('OK')" 2>&1
    python3 -c "import ast; ast.parse(open('$PROJ/interval_calculator.py').read()); print('OK')" 2>&1
+   python3 -c "import ast; ast.parse(open('$PROJ/digitization_pipeline.py').read()); print('OK')" 2>&1
    ```
-   If syntax check fails, revert immediately: `git -C "$PROJ" checkout HEAD -- <file>`.
-6. Run tests. Interpret result:
-   - **Improvement**: commit → update task status → continue.
-   - **Regression**: revert immediately, log it, try a different approach.
+   **KNOWN ISSUE:** The Linux bash mount sometimes shows a stale cached version of the Windows files, making it appear shorter than it is. If syntax check fails but the error is in the last few lines and looks like a truncation artefact, use the Read tool to verify the actual Windows file state — do not revert based on bash alone.
+6. Run tests:
+   ```bash
+   cd "$PROJ" && python3 -m pytest tests/test_scan_accuracy.py -v 2>&1 | tee result_linux.txt | tail -40
+   ```
+7. Interpret result:
+   - **Improvement**: commit (see Step 3.8) → update task status → continue.
+   - **Regression**: revert immediately: `git -C "$PROJ" checkout HEAD -- <file>`, log it, try different approach.
    - **No change**: keep (safe) → log → continue.
-7. Append attempt log to SCAN_DEBUG_ANALYSIS.md **immediately** (not just at end of night):
+8. **Commit after each improvement:**
+   ```bash
+   # Clear any stale lock files silently (safe even if they don't exist)
+   rm -f "$PROJ/.git/HEAD.lock" "$PROJ/.git/index.lock" 2>/dev/null
+   git -C "$PROJ" add digitization_pipeline.py interval_calculator.py \
+       SCAN_DEBUG_ANALYSIS.md SCAN_HISTORY.md linux_wheels/ NIGHTLY_AGENT_PROMPT.md
+   git -C "$PROJ" commit -m "nightly attempt N: description — X/8 pass"
+   ```
+   If commit still fails after removing locks, log the error message and keep working — don't ask Shlomi for anything.
+9. Append attempt log to SCAN_DEBUG_ANALYSIS.md immediately (not just at end):
    ```
    ### Attempt N — description (YYYY-MM-DD)
    - **Change:** what was edited and where
    - **Result:** X/8 pass
    - **Verdict:** what this tells us / next direction
    ```
-   When a task reaches `[DONE]`, move it out of the Queued Tasks table and add a one-line summary to SCAN_HISTORY.md under "## Fix log".
-8. Commit after each successful attempt:
-   ```bash
-   git -C "$PROJ" add digitization_pipeline.py interval_calculator.py SCAN_DEBUG_ANALYSIS.md SCAN_HISTORY.md
-   git -C "$PROJ" commit -m "nightly attempt N: description — X/8 pass"
-   ```
-   If commit fails with lock error: log "GIT BLOCKED — Shlomi must del .git\\HEAD.lock .git\\index.lock" and continue working (don't stop for this).
+   When a task reaches `[DONE]`, move it out of the table and add a one-line summary to SCAN_HISTORY.md under "## Fix log".
 
 ---
 
@@ -126,24 +118,21 @@ Repeat until 6:55am:
    - Tasks pending: [list]
    - Key finding: one sentence
    ```
-3. Final commit:
-   ```bash
-   git -C "$PROJ" add digitization_pipeline.py interval_calculator.py SCAN_DEBUG_ANALYSIS.md SCAN_HISTORY.md
-   git -C "$PROJ" commit -m "nightly session YYYY-MM-DD: X/8 pass"
-   ```
-4. Send summary email:
+3. Final commit (same as Step 3.8).
+4. Send summary:
    ```bash
    DURATION_MIN=$(( ($(date +%s) - START_TS) / 60 ))
-   python3 "$PROJ/send_summary_email.py" --attempts N --before X --after Y --duration "${DURATION_MIN} min" --log "brief description"
+   python3 "$PROJ/send_summary_email.py" --attempts N --before X --after Y \
+     --duration "${DURATION_MIN} min" --log "brief description"
    ```
-   (SMTP is blocked in the bash sandbox — script falls back to writing NIGHTLY_SUMMARY.txt automatically. That's fine.)
+   SMTP is blocked — script falls back to writing NIGHTLY_SUMMARY.txt automatically. That's fine.
 
 ---
 
-## Agent roles
+## Agent roles (use sparingly — each spawn costs context budget)
 
 ### 🧠 Thinker ← `model: "opus"`
-Use when starting a task where the approach isn't already specified. Skip for mechanical changes where the spec is clear.
+Use ONLY when the approach is genuinely unknown after reading the task description. Do NOT use for tasks where the approach is already specified.
 
 Prompt template:
 ```
@@ -153,13 +142,10 @@ Produce a precise fix spec for the Coder. Do NOT write code.
 STATE (queued tasks + constraints):
 <paste SCAN_DEBUG_ANALYSIS.md>
 
-RECENT ATTEMPT HISTORY (last 2-3 attempts only):
-<paste ## Most recent attempt section from SCAN_DEBUG_ANALYSIS.md>
-
 TARGET TASK: <Task A / B / C>
 
-CODE CONTEXT (~50-80 lines around target function):
-<paste relevant section>
+CODE CONTEXT (~50-80 lines around target function only):
+<paste specific function, not the whole file>
 
 Output:
 1. Which function and lines to edit
@@ -170,20 +156,18 @@ Output:
 ```
 
 ### 💻 Coder ← `model: "sonnet"`
-Use when fix spec is ready. Rules: `Edit` only (never `Write`). Verify syntax after every edit.
-
-### 🔬 Research ← `model: "sonnet"`
-Use when a task has been blocked (3 approaches all regressed). Results go to SCAN_HISTORY.md "## Algorithm research" section and inform the next Thinker prompt.
+Use when fix spec is ready and the edit spans multiple functions or files. For single-function edits, do it yourself — spawning Coder just to edit 10 lines wastes context.
 
 ---
 
 ## Hard constraints (never violate)
 
 - **Never use `Write` on code files** — use `Edit` only.
-- **Always verify syntax after every edit.**
+- **Always verify syntax after every edit** (accounting for bash mount lag — use Read tool if bash result looks wrong).
 - Never shorten extracted signal below ~3 s.
 - Never undo Attempts 1-9 (all intentional).
 - Always run the full 8-fixture suite, not just the target fixture.
 - Revert on regression before anything else.
 - SCAN_DEBUG_ANALYSIS.md stays short (~80 lines max). Old attempt detail goes to SCAN_HISTORY.md.
 - 3 non-image tests always pass: `test_normalize_lead_name_canonical_forms`, `test_polarity_flip_inverts_negative_dominant_signal`, `test_polarity_flip_does_not_invert_normal_signal`.
+- **Never ask Shlomi to run tests, delete files, or run git commands.** The agent does all of this autonomously.
