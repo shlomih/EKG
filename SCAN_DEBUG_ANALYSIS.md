@@ -14,7 +14,7 @@ _Full attempt history: `SCAN_HISTORY.md`_
 | A | `[IMPL — UNVERIFIED]` | R-peak quality — **Attempts 15+17:** (15) zero-width peak fix; (17) bradycardia fallback (HR<45 → per-method rescore). Together should fix HR84 (3→7 peaks), HR106 (2→8 peaks). | `interval_calculator.py` | HR84, HR106 |
 | B | `[IMPL — UNVERIFIED]` | Band selection (HR106 trace dropout) — Attempt 8 ECGtizer fragmented extraction in `_trace_to_signal`. After Attempt 17 fixes spurious low-HR train, band scorer may already pick correct row. Verify. | `digitization_pipeline.py` | HR106 |
 | C | `[IMPL — UNVERIFIED]` | Grid P-onset (fx8200 PR=286ms vs truth=131ms) — Attempt 9 (grid inpainting) + Attempt 10B (60–250ms P-window). If PR still wrong after test: DWT P-onset is finding T-wave of prev beat (~280ms) not true P-wave (~131ms). Needs fresh diagnostic from Windows run. | `digitization_pipeline.py`, `interval_calculator.py` | fx8200 |
-| D | `[DONE]` | QTc tachycardia — Attempt 16 adds `method="peak"` fallback when DWT gives QTc=None. | — | HR167 |
+| D | `[DONE]` | QTc tachycardia — Attempt 19: next-Q-onset fallback when HR>130 and QTc<420ms. HR167 now passes (4/8). | — | HR167 |
 | E | `[DONE]` | Algorithm research — done 2026-06-13. See `SCAN_HISTORY.md`. | — | — |
 
 **Constraints (never break these):**
@@ -83,9 +83,11 @@ Key functions added by Attempts 7-9:
 - **Syntax:** Both edits verified via Read tool. Bash mount stale (shows 1059 lines, Windows has 1113+).
 - **Result:** UNVERIFIED. Expected: HR84 → more peaks → delineation succeeds. HR167 → QTc≈490-540ms (within ±80ms of truth 533).
 
-## Nightly Run Summary — 2026-06-18
-- Attempts: 1 (Attempt 18 — discovery + verification)
-- Pass rate: 3/8 (pre-15/16/17) → UNVERIFIED after Attempts 15–17
-- Tasks completed: Documented Attempt 17 (was in code, undocumented)
-- Key finding: **Three real fixes in working tree: Attempts 15, 16, 17 — all untested.** Expected gains: HR84 + HR106 fixed by Attempts 15+17, HR167 QTc by Attempt 16, fx8200 still needs Windows diagnostic for HR and PR.
-- **Next (Shlomi):** `del .git\HEAD.lock .git\index.lock` → `venv\Scripts\python -m pytest tests\test_scan_accuracy.py -v 2>&1 | Tee-Object result.txt` → git add/commit all files.
+## Nightly Run Summary — 2026-06-18 (session 2)
+- Attempts: Attempt 19 (next-Q-onset QTc fallback for HR>130 + QTc<420ms)
+- Pass rate: 3/8 → **4/8** (HR167 fixed)
+- Root cause solved: stale Linux pyc was hiding the Attempt 19 code; fixed with conftest.py stale-mount workaround
+- HR84: 3 peaks detected ([918,1297,1686]), HR=78 vs truth=84 — signal only 2353 samples, digitization issue
+- HR106: 2 peaks, HR=40 vs truth=106 — max amplitude 0.258, wrong band selection or trace dropout
+- fx8200: HR=54 vs 66 (missing beats, alternating R+T detected), PR=286 vs 131 (DWT P-onset 156ms too early)
+- **Next:** HR84/HR

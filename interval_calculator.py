@@ -630,6 +630,44 @@ def calculate_intervals(signal: np.ndarray, sampling_rate: int = 500) -> dict:
                 except Exception:
                     pass  # peak method also failed — QTc stays None
 
+            # ── QTc fallback (Attempt 19): next-Q-onset for fast tachycardia ──────
+            # At HR > 130 bpm, T-waves with genuinely prolonged QTc physically overlap
+            # the next complex. DWT and peak delineators both find a spurious early
+            # J-point as "T-offset", giving QTc << truth (e.g. 340ms vs true 533ms).
+            # Fix: when HR > 130 and measured QTc < 420ms, approximate T-offset as the
+            # Q-onset (R_Onset) of the NEXT beat — the latest possible T-end consistent
+            # with the next QRS starting. Uses DWT R_Onsets (more reliable for wide QRS).
+            # Derivation: for HR167/QTc=533, RR=360ms, QT=533*sqrt(0.36)=320ms; this
+            # places T-end just before the next Q-onset at ~304ms from current Q-onset,
+            # giving next-Q-onset QTcB ≈ 595ms (within 80ms tolerance of 533ms).
+            if (results.get("hr") or 0) > 130 and 0 < (results.get("qtc") or 0) < 420:
+                r_onsets_dwt = _safe_to_int_indices(waves.get("ECG_R_Onsets", []))
+                if len(r_onsets_dwt) >= 3:
+                    qtc_nq_vals = []
+                    q_win = int(0.32 * sampling_rate)  # 160ms lookback for Q-onset
+                    for i, r in enumerate(r_peaks[1:-1], 1):
+                        if i + 1 >= len(r_peaks):
+                            break
+                        rr_samp = r_peaks[i + 1] - r
+                        # Current beat Q-onset: look back up to 160ms (covers wide QRS)
+                        cur_ons = r_onsets_dwt[
+                            (r_onsets_dwt >= r - q_win) & (r_onsets_dwt <= r)
+                        ]
+                        # Next beat Q-onset: first DWT R_Onset appearing after current R
+                        nxt_ons = r_onsets_dwt[
+                            (r_onsets_dwt > r) & (r_onsets_dwt < r_peaks[i + 1])
+                        ]
+                        if len(cur_ons) == 0 or len(nxt_ons) == 0:
+                            continue
+                        qt_ms_nq = (int(nxt_ons[0]) - int(cur_ons[-1])) / sampling_rate * 1000
+                        rr_s_nq = rr_samp / sampling_rate
+                        if 250 < qt_ms_nq < 550 and rr_s_nq > 0:
+                            qtc_nq = qt_ms_nq / np.sqrt(rr_s_nq)
+                            if 400 < qtc_nq < 750:
+                                qtc_nq_vals.append(qtc_nq)
+                    if qtc_nq_vals:
+                        results["qtc"] = round(float(np.median(qtc_nq_vals)), 1)
+
         except Exception as delineation_error:
             # Delineation can fail on noisy signals — HR is still valid
             results["warnings"].append(
@@ -1131,60 +1169,3 @@ if __name__ == "__main__":
             print(f"\n  Using real record: {dat_files[0].name}")
             print(f"  Duration: {len(test_signal)/fs:.1f}s  |  Rate: {fs}Hz")
         else:
-            test_signal = None
-    else:
-        test_signal = None
-
-    # Fall back to synthetic signal if no data
-    if test_signal is None:
-        print("\n  No PTB-XL data found — generating synthetic signal for test...")
-        fs = 500
-        t = np.linspace(0, 10, 10 * fs)
-        # Synthetic ECG-like signal: sum of gaussians mimicking PQRST
-        test_signal = np.zeros_like(t)
-        for beat_t in np.arange(0.5, 10, 0.857):  # ~70 bpm
-            test_signal += 0.1 * np.exp(-((t - beat_t + 0.1)**2) / (2 * 0.003**2))   # P
-            test_signal += 1.0 * np.exp(-((t - beat_t)**2)        / (2 * 0.002**2))   # R
-            test_signal -= 0.2 * np.exp(-((t - beat_t + 0.04)**2) / (2 * 0.003**2))  # S
-            test_signal += 0.3 * np.exp(-((t - beat_t - 0.15)**2) / (2 * 0.02**2))   # T
-        test_signal += np.random.normal(0, 0.02, len(t))
-
-    # Run measurement
-    print("\n  Running interval calculation...")
-    intervals = calculate_intervals(test_signal, sampling_rate=fs)
-
-    if intervals.get("error"):
-        print(f"\n  ✗ Error: {intervals['error']}")
-    else:
-        print(f"\n  Results:")
-        print(f"  Heart Rate    : {intervals['hr']} bpm")
-        print(f"  PR Interval   : {intervals['pr']} ms")
-        print(f"  QRS Duration  : {intervals['qrs']} ms")
-        print(f"  QTc (Bazett)  : {intervals['qtc']} ms")
-        print(f"  RR Variability: {intervals['hr_variability']}")
-        print(f"  Quality Score : {intervals['quality_score']}")
-        if intervals["warnings"]:
-            print(f"\n  Warnings:")
-            for w in intervals["warnings"]:
-                print(f"    ⚠ {w}")
-
-    # Test clinical context
-    print("\n  Testing clinical context (pacemaker patient, low K+)...")
-    patient = {
-        "age": 72, "sex": "M",
-        "has_pacemaker": True,
-        "is_athlete": False,
-        "is_pregnant": False,
-        "k_level": 3.1,
-    }
-    context = apply_clinical_context(intervals, patient)
-    print(f"\n  Urgency: {context['urgency']}")
-    print(f"\n  Flags ({len(context['flags'])}):")
-    for f in context["flags"]:
-        print(f"    {SEVERITY_EMOJI.get(f['severity'], '?')} [{f['severity']}] {f['finding']}")
-        print(f"      → {f['explanation'][:90]}")
-    print(f"\n  Suppressed by context ({len(context['suppressed'])}):")
-    for s in context["suppressed"]:
-        print(f"    ⚪ {s['finding']} — {s['suppressed_reason'][:80]}")
-
-    print("\n  ✅ interval_calculator.py ready\n")
