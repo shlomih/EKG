@@ -107,6 +107,11 @@ Top picks: (1) QRS Width Gate (half-max 15–100ms) for HR84 T-wave rejection; (
 ### Attempt 16 — QTc fallback: `method="peak"` for tachycardia (2026-06-17)
 - **Root cause:** HR167 only fails QTc. DWT T-offsets at 50–80ms from R (J-point). The 280ms QT floor correctly rejects → QTc=None. Real T-end at ~320ms.
 - **Fix:** After DWT QTc loop: if `results["qtc"] is None and len(r_peaks) >= 3`, retry `nk.ecg_delineate(method="peak")` with same QTc logic. Silenced via inner try/except.
+
+### Attempt 17 — Bradycardia-train fallback in `_consensus_rpeaks` (2026-06-17/18)
+- **Root cause:** HR106 consensus HR=40 bpm. True R-peaks found by different detectors at positions differing by >120ms → never clustered to k≥2 votes → sparse artifact train selected.
+- **Fix:** After selecting `best_train`: if median HR < 45 bpm, iterate all 6 `_RPEAK_METHODS` individually; if any produces higher `_score_rpeak_train`, replace. The dense 106-bpm single-detector train outscores the sparse artifact train.
+- **Note:** Added to code ~2026-06-17 but undocumented until 2026-06-18 nightly discovery. Does NOT trigger for fx8200 (consensus=54 > 45 threshold).
 - **Result:** UNVERIFIED. Syntax-clean. No regression if "peak" also fails.
 
 ### 2026-06-17 (automated nightly, 2nd run)

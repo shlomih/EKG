@@ -293,6 +293,36 @@ def _consensus_rpeaks(cleaned, sampling_rate, nk):
             np.isfinite(np.asarray(info["ECG_R_Peaks"], dtype=float))
         ].astype(int)
 
+    # ── Bradycardia-fallback (Attempt 17) ─────────────────────────────────
+    # When the consensus locks onto a sparse artifact train (e.g. T-waves that
+    # ≥2 detectors agree on), the resulting HR is spuriously low (~40-45 bpm).
+    # For HR84/HR106 the consensus produces only 2-3 such peaks, causing
+    # delineation to crash ("cannot convert float NaN to integer").
+    # Root cause: the true R-peaks are found by different detectors at positions
+    # that differ by >120 ms, so they never reach the k≥2 vote threshold.
+    # Fix: if consensus HR < 45 bpm, re-score each individual detector output
+    # directly (no agreement filter). One detector almost certainly finds a
+    # denser, more regular train at the true HR — and the score function will
+    # prefer it over the sparse noise train.
+    if len(best_train) >= 2:
+        _rr_s = float(np.median(np.diff(best_train))) / max(sampling_rate, 1)
+        _hr_est = 60.0 / _rr_s if _rr_s > 0 else 0
+        if _hr_est < 45:
+            for _method in _RPEAK_METHODS:
+                try:
+                    _, _info = nk.ecg_peaks(
+                        cleaned, sampling_rate=sampling_rate, method=_method
+                    )
+                    _pk = np.asarray(_info["ECG_R_Peaks"], dtype=float)
+                    _pk = _pk[np.isfinite(_pk)].astype(int)
+                    if len(_pk) < 3:
+                        continue
+                    _s = _score_rpeak_train(_pk, cleaned, sampling_rate)
+                    if _s is not None and _s > best_score:
+                        best_score, best_train = _s, _pk
+                except Exception:
+                    continue
+
     # ── Peak-width gate ────────────────────────────────────────────────────
     # Remove broad deflections (T-waves, P-waves) that score well on the
     # regularity/coverage scorer but are physiologically too wide to be QRS.
