@@ -118,3 +118,44 @@ Top picks: (1) QRS Width Gate (half-max 15–100ms) for HR84 T-wave rejection; (
 - Attempts: 2 (Attempt 15: width gate fix + Attempt 16: QTc peak-fallback). First session to make real code changes.
 - Root cause of all R-peak failures identified from Shlomi's result.txt. Both fixes implemented and syntax-verified.
 - Pass rate: 3/8 → UNVERIFIED. Expected: 6-7/8 after Windows test run.
+
+### Attempt 18 — Threshold + QT-floor fix (2026-06-18, session 1)
+- Bradycardia threshold 45→55bpm (also: trigger when len<5). QT floor 280→200ms, Q-onset as QT start.
+- Result: UNVERIFIED at time. Tested 2026-06-18 session 2 — HR84 still 3 peaks (78bpm), HR167 QTc still 340ms.
+
+### Attempt 19 — Next-Q-onset QTc fallback for fast tachycardia (2026-06-18, session 2)
+- **Root cause:** HR167 QTc=340ms (DWT T-offset at J-point 67ms from R). Peak-method fallback also gets 340ms. Both delineators detect J-point, not T-end. T-end at ~320ms from Q-onset is physically beyond the next QRS onset for HR>130.
+- **Fix:** When HR>130 and QTc<420ms, use the Q-onset (R_Onset) of the NEXT beat as T-offset proxy. For each beat, measure QT = (next_R_onset - current_R_onset). Gives QTcB≈595ms for HR167 (truth=533ms, within 80ms tolerance).
+- **Blocker during dev:** Stale Linux pyc (compiled from pre-A19 source) was silently loaded despite source having A19. `touch` + `conftest.py` stale-mount workaround fixed it.
+- **Result: PASS. HR167 now passes. 4/8 overall (was 3/8).**
+
+### 2026-06-18 (manual + automated session 2)
+- Verified Attempts 15–19 on Linux sandbox. 4/8 pass (HR167, 3 non-image tests).
+- HR84/HR106: fundamental digitization issue — signal 2353/2425 samples, few and poorly-spaced peaks regardless of algorithm. Needs band-selection fix in digitization_pipeline.py.
+- fx8200: HR=54 (alternating R+T peaks confuse detectors; 6 of 10 peaks removed by width filter leaving only 4 with irregular RR). PR=286ms (DWT finds wrong P-feature 156ms too early at sample 749 vs truth ~827).
+- Infrastructure: added conftest.py with stale-mount patch for nightly Linux runs.
+
+### Attempt 20 — Diagnostic only (2026-06-19, nightly)
+- No code changes. Per-detector signal analysis confirmed digitization root cause for all 3 remaining failures.
+- HR84: consensus 3 peaks [918,1297,1686], HR=78 vs 84. All 6 detectors tried (bradycardia fallback), none find 4th peak. DWT delineation fails with NaN.
+- HR106: consensus 2 peaks, HR=40. All 6 detectors give HR≈160 noise trains or too-sparse output.
+- fx8200: consensus 4 peaks [411,892,1628,2182], HR=54. DWT P-onset at 749 (286ms before R=892).
+
+### Attempt 21 — Deep signal diagnostic of fx8200 (2026-06-20, nightly)
+- **No code changes.** Detailed analysis of fx8200 cleaned signal to understand R-peak misdetection.
+- **Key finding:** Consensus "R-peaks" [411,892,1628,2182] are wrong features. True R-peaks are at ~[431,875,1314,~1783(missing),2221] based on positive peak analysis.
+  - R=892 has amplitude -0.243 (S-wave); true R-peak is at 875 (amplitude 0.741)
+  - R=411 has amplitude 0.021 (baseline noise); true beat 1 peak at ~431 (0.321)
+  - Signal max in [1500,2000] is only 0.437 — beat at ~1783 is invisible/lost in digitization
+- **Snap-to-max test (±20 samples):** Snapping gives [431,875,1617,2184]. DWT still finds same wrong P-onset at 749 regardless. HR still ~53bpm (missed beat at ~1314 not recovered — gap ratio only 1.31 < 1.5 threshold for `_recover_missed_rpeaks`).
+- **PR geometry:** True P-onset for R=875 would be at ~810 (131ms before 875 = 65.5 samples). Signal at 810 is 0.023 (baseline), consistent with P-wave onset. DWT finds feature at 749-785 which is a T-wave tail/artifact from previous beat, not the P-wave.
+- **Conclusion:** Cannot fix fx8200 in interval_calculator.py. Requires digitization pipeline to produce cleaner signal with R-peaks at correct positions and visible beat in [1500-1800] sample range.
+- **Pass rate: 4/8 → 4/8 (no change).**
+
+### Attempt 22 — Polarity penalty in `_score_rpeak_train` (2026-06-20, interactive session) — REVERTED
+- **Change:** Added `polarity_factor = 0.3 if float(np.median(amps)) < 0 else 1.0` to `_score_rpeak_train` return, to penalise trains whose median amplitude is negative (S-wave trains).
+- **Theory:** Consensus train [411,892,1628,2182] has median amp=-0.111 → 0.3x penalty. Elgendi's train [344,875,1461,1655,2116] (median=+0.439) would then win the bradycardia fallback.
+- **Critical failure:** Elgendi wins (score 0.637 > 0.641×0.3=0.192), BUT `_filter_by_peak_width` then rejects the true R-peak at 875 (measured width=105ms > 100ms ceiling). Filtered result: [344, 1655] → HR=23bpm (vs baseline 54bpm). Regression.
+- **Scoring discovery:** Consensus scores 0.641, elgendi scores 0.637 — gap only 0.004. Weight tuning alone (e.g. 0.45→0.43 regularity) can make elgendi win. But even then, width filter → [344,875,1655] → HR=45.8bpm → diff=19 (tol=4). Missing beat at ~1329 is undetectable — no algorithm path to HR=66bpm.
+- **Reverted.** Pass rate remains 4/8.
+- **Conclusion:** Both width ceiling (100ms→110ms) and polarity changes are ineffective in isolation or combined because the missing beat at ~1329 prevents HR from reaching 66bpm. Only digitization pipeline fix can help.
